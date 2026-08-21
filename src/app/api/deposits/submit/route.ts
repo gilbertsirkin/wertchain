@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient } from "@/lib/ledger";
+import { mailer } from "@/lib/email/mailer";
 
 export async function POST(req: NextRequest) {
   // 1. Auth
@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
   // 3. Fetch deposit — must belong to this user
   const { data: deposit, error: fetchError } = await adminClient
     .from("wc_deposits")
-    .select("id, user_id, status, payment_reference, metadata")
+    .select("id, user_id, status, payment_reference, metadata, amount, currency")
     .eq("id", deposit_id)
     .single();
 
@@ -120,6 +121,27 @@ export async function POST(req: NextRequest) {
       { error: "Failed to submit transaction hash. Please try again." },
       { status: 500 }
     );
+  }
+
+  // Fetch user record for email
+  const { data: submitterRecord } = await adminClient
+    .from("wc_users")
+    .select("email, full_name")
+    .eq("id", user.id)
+    .single();
+
+  if (submitterRecord?.email) {
+    mailer.depositReceived(submitterRecord.email, {
+      fullName: submitterRecord.full_name ?? "Investor",
+      amount: Number(deposit.amount),
+      currency: deposit.currency ?? "USDT",
+      txHash: txHashClean,
+      depositId: deposit_id,
+      submittedAt: new Date(updated.updated_at ?? Date.now()).toLocaleString("en-GB", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }),
+    }).catch((e) => console.error("[mailer] depositReceived failed:", e));
   }
 
   return NextResponse.json({

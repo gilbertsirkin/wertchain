@@ -23,6 +23,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient, postLedgerTransaction } from "@/lib/ledger";
+import { mailer } from "@/lib/email/mailer";
 
 export async function POST(req: NextRequest) {
   // 1. Authenticate
@@ -92,7 +93,7 @@ export async function POST(req: NextRequest) {
   // 4. Validate user account
   const { data: userData, error: userError } = await adminClient
     .from("wc_users")
-    .select("id, is_active, is_suspended, kyc_status")
+    .select("id, is_active, is_suspended, kyc_status, email, full_name")
     .eq("id", user.id)
     .single();
 
@@ -240,6 +241,24 @@ export async function POST(req: NextRequest) {
     // of truth. Log loudly; wc_wallet_balances can be reconciled from
     // the ledger by the nightly reconciliation job.
     console.error("Wallet balance update error (ledger already posted):", balanceUpdateError);
+  }
+
+  // Send investment confirmation email (non-blocking)
+  if (userData?.email) {
+    const activatedDate = new Date(contract.activated_at ?? new Date()).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    const maturityDate = new Date(new Date(contract.activated_at ?? new Date()).getTime() + durationDays * 86400000).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    mailer.contractCreated(userData.email, {
+      fullName: userData.full_name ?? "Investor",
+      planTier: plan.tier,
+      principal: amountNum,
+      profitRate,
+      expectedProfit,
+      duration: durationDays,
+      activatedAt: activatedDate,
+      maturityDate,
+      contractId: contract.id,
+      autoReinvest: auto_reinvest,
+    }).catch((e) => console.error("[mailer] contractCreated failed:", e));
   }
 
   return NextResponse.json(

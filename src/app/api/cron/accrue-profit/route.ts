@@ -25,6 +25,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { adminClient, postLedgerTransaction } from "@/lib/ledger";
+import { mailer } from "@/lib/email/mailer";
 
 const CRON_SECRET = process.env.CRON_SECRET;
 
@@ -74,7 +75,7 @@ export async function GET(req: NextRequest) {
   // 4. Fetch all ACTIVE, not-yet-fully-credited contracts
   const { data: contracts, error: contractsErr } = await adminClient
     .from("wc_contracts")
-    .select("id, user_id, principal_amount, expected_profit, daily_profit_amount, duration_days_snapshot, profit_credited, profit_fully_credited, auto_reinvest, maturity_date, activated_at, release_delay_days, release_eligible_date")
+    .select("id, user_id, plan_tier, principal_amount, expected_profit, daily_profit_amount, duration_days_snapshot, profit_credited, profit_fully_credited, auto_reinvest, maturity_date, activated_at, release_delay_days, release_eligible_date")
     .eq("state", "ACTIVE")
     .eq("profit_fully_credited", false);
 
@@ -231,6 +232,25 @@ export async function GET(req: NextRequest) {
 
         // Transition state — AUTO_REINVESTED or RELEASE_QUEUE
         contractUpdate.state = contract.auto_reinvest ? "AUTO_REINVESTED" : "RELEASE_QUEUE";
+
+        // Send profit credited email (non-blocking)
+        const { data: contractUser } = await adminClient
+          .from("wc_users")
+          .select("email, full_name")
+          .eq("id", contract.user_id)
+          .single();
+
+        if (contractUser?.email) {
+          mailer.profitCredited(contractUser.email, {
+            fullName: contractUser.full_name ?? "Investor",
+            planTier: contract.plan_tier ?? "WERTCHAIN_START",
+            principal: Number(contract.principal_amount),
+            profitAmount: totalPending,
+            totalCredited: Number(contract.principal_amount) + totalPending,
+            contractId: contract.id,
+            autoReinvest: !!contract.auto_reinvest,
+          }).catch((e) => console.error("[mailer] profitCredited failed:", e));
+        }
       }
 
       await adminClient.from("wc_contracts").update(contractUpdate as any).eq("id", contract.id);

@@ -23,6 +23,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient } from "@/lib/ledger";
+import { mailer } from "@/lib/email/mailer";
 
 export async function POST(req: NextRequest) {
   // 1. Auth
@@ -200,6 +201,28 @@ export async function POST(req: NextRequest) {
       // Roll back migration record
       await adminClient.from("wc_migrations").delete().eq("id", migration.id);
       throw new Error(`Failed to update contract state: ${contractUpdateErr.message}`);
+    }
+
+    // Send migration request email (non-blocking)
+    const { data: migUserRecord } = await adminClient
+      .from("wc_users")
+      .select("email, full_name")
+      .eq("id", user.id)
+      .single();
+
+    if (migUserRecord?.email) {
+      mailer.migrationRequested(migUserRecord.email, {
+        fullName: migUserRecord.full_name ?? "Investor",
+        sourcePlan: sourceContract.plan_tier ?? "WERTCHAIN_START",
+        targetPlan: targetPlan.tier,
+        capitalAmount: Number(capitalAmount),
+        topupAmount: Number(topupNum),
+        migrationId: migration.id,
+        requestedAt: new Date(migration.created_at).toLocaleString("en-GB", {
+          dateStyle: "medium",
+          timeStyle: "short",
+        }),
+      }).catch((e) => console.error("[mailer] migrationRequested failed:", e));
     }
 
     return NextResponse.json(

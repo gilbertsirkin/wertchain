@@ -32,6 +32,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient, postLedgerTransaction } from "@/lib/ledger";
+import { mailer } from "@/lib/email/mailer";
 
 export async function POST(req: NextRequest) {
   // 1. Auth
@@ -348,6 +349,26 @@ export async function POST(req: NextRequest) {
       reason: admin_notes ?? "Migration approved",
       ledger_tx_id: creditTxId,
     });
+
+    // Send migration approved email (non-blocking)
+    const { data: migApproveUser } = await adminClient
+      .from("wc_users")
+      .select("email, full_name")
+      .eq("id", userId)
+      .single();
+
+    if (migApproveUser?.email) {
+      mailer.migrationApproved(migApproveUser.email, {
+        fullName: migApproveUser.full_name ?? "Investor",
+        sourcePlan: migration.source_contract_id ?? "WERTCHAIN_START",
+        targetPlan: migration.target_plan_tier ?? targetPlan.tier,
+        newPrincipal: Number(totalPrincipal),
+        newProfitRate: Number(targetPlan.profit_rate),
+        newMaturityDate: maturityDateStr,
+        newContractId: newContract.id,
+        migrationId: migration_id,
+      }).catch((e) => console.error("[mailer] migrationApproved failed:", e));
+    }
 
     return NextResponse.json({
       message: "Migration approved. New contract is ACTIVE.",

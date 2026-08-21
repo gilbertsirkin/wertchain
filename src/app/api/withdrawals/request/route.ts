@@ -25,6 +25,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient, postLedgerTransaction } from "@/lib/ledger";
+import { mailer } from "@/lib/email/mailer";
 
 export async function POST(req: NextRequest) {
   // 1. Auth
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest) {
   // 3. Verify user account
   const { data: userData } = await adminClient
     .from("wc_users")
-    .select("id, is_active, is_suspended, kyc_status")
+    .select("id, is_active, is_suspended, kyc_status, email, full_name")
     .eq("id", user.id)
     .single();
 
@@ -223,6 +224,21 @@ export async function POST(req: NextRequest) {
     }).then(({ error }) => {
       if (error) console.error("available_balance cache decrement failed (non-fatal):", error.message);
     });
+
+    // Send withdrawal request email (non-blocking)
+    if (userData?.email) {
+      const dest = typeof destination_details === "object" && destination_details !== null
+        ? (destination_details as Record<string, string>).address ?? JSON.stringify(destination_details)
+        : String(destination_details);
+      mailer.withdrawalRequested(userData.email, {
+        fullName: userData.full_name ?? "Investor",
+        amount: amountNum,
+        withdrawalType: withdrawal_type as "PROFIT" | "CAPITAL",
+        destination: dest,
+        requestedAt: new Date(withdrawal.created_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }),
+        withdrawalId: withdrawal.id,
+      }).catch((e) => console.error("[mailer] withdrawalRequested failed:", e));
+    }
 
     return NextResponse.json(
       {

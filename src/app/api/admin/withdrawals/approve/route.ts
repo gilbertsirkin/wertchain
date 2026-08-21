@@ -28,6 +28,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { mailer } from "@/lib/email/mailer";
 import { adminClient, postLedgerTransaction } from "@/lib/ledger";
 
 export async function POST(req: NextRequest) {
@@ -90,9 +91,14 @@ export async function POST(req: NextRequest) {
   // 4. Fetch withdrawal
   const { data: withdrawal, error: wErr } = await adminClient
     .from("wc_withdrawals")
-    .select("id, user_id, withdrawal_type, amount, currency, status, contract_id, fee_amount, net_payout")
+    .select("id, user_id, withdrawal_type, amount, currency, status, contract_id, fee_amount, net_payout, destination_details")
     .eq("id", withdrawal_id)
     .single();
+
+  // Fetch user for email
+  const { data: wUserRecord } = withdrawal
+    ? await adminClient.from("wc_users").select("email, full_name").eq("id", withdrawal.user_id).single()
+    : { data: null };
 
   if (wErr || !withdrawal) {
     return NextResponse.json({ error: "Withdrawal not found" }, { status: 404 });
@@ -175,6 +181,17 @@ export async function POST(req: NextRequest) {
         after_state: { status: "REJECTED" },
         reason: rejection_reason!,
       });
+
+      // Send rejection email (non-blocking)
+      if (wUserRecord?.email) {
+        mailer.withdrawalRejected(wUserRecord.email, {
+          fullName: wUserRecord.full_name ?? "Investor",
+          amount: totalAmount,
+          withdrawalType: withdrawal.withdrawal_type as "PROFIT" | "CAPITAL",
+          withdrawalId: withdrawal_id,
+          reason: rejection_reason,
+        }).catch((e) => console.error("[mailer] withdrawalRejected failed:", e));
+      }
 
       return NextResponse.json({
         message: "Withdrawal rejected. Funds returned to user wallet.",
@@ -279,6 +296,22 @@ export async function POST(req: NextRequest) {
       reason: admin_notes ?? "Withdrawal approved by admin",
       ledger_tx_id: transactionId,
     });
+
+    // Send approval email (non-blocking)
+    if (wUserRecord?.email) {
+      const dest = withdrawal.destination_details
+        ? (withdrawal.destination_details as Record<string, string>).address ?? JSON.stringify(withdrawal.destination_details)
+        : "—";
+      mailer.withdrawalApproved(wUserRecord.email, {
+        fullName: wUserRecord.full_name ?? "Investor",
+        amount: Number(netPayout),
+        withdrawalType: withdrawal.withdrawal_type as "PROFIT" | "CAPITAL",
+        destination: dest,
+        withdrawalId: withdrawal_id,
+        approvedAt: now.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }),
+        txHash: tx_hash,
+      }).catch((e) => console.error("[mailer] withdrawalApproved failed:", e));
+    }
 
     return NextResponse.json({
       message: "Withdrawal approved.",
