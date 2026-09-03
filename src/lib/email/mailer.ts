@@ -254,3 +254,4 @@ export const mailer = {
   ) =>
     send(to, `Security Alert — New Sign-In to Your Wertchain Account`, securityAlertEmail(params)),
 }
+
