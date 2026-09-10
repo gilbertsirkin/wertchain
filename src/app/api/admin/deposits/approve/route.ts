@@ -17,6 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient, postLedgerTransaction } from "@/lib/ledger";
+import { mailer } from "@/lib/email/mailer";
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -110,6 +111,8 @@ export async function POST(req: NextRequest) {
       reason: rejection_reason!,
     });
 
+    const { data: rejUser } = await adminClient.from("wc_users").select("email, full_name").eq("id", userId).single();
+    if (rejUser?.email) mailer.depositRejected(rejUser.email, { fullName: rejUser.full_name ?? "Investor", amount, currency: deposit.currency, depositId: deposit_id, reason: rejection_reason }).catch(() => {});
     return NextResponse.json({ message: "Deposit rejected.", deposit_id });
   }
 
@@ -187,6 +190,8 @@ export async function POST(req: NextRequest) {
       deposit_id,
       amount_credited: amount.toFixed(8),
       ledger_tx_id: depositTxId,
+    const { data: appUser } = await adminClient.from("wc_users").select("email, full_name, wc_wallet_balances(available_balance)").eq("id", userId).single();
+    if (appUser?.email) mailer.depositApproved(appUser.email, { fullName: appUser.full_name ?? "Investor", amount, currency: deposit.currency, newBalance: Number((appUser.wc_wallet_balances as any)?.available_balance ?? 0) + amount, depositId: deposit_id }).catch(() => {});
       next_step: "User can now visit /invest to activate an investment plan.",
     });
   } catch (err) {
