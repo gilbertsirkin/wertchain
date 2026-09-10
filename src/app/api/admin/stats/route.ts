@@ -33,15 +33,15 @@ export async function GET() {
     adminClient.from("wc_users").select("*", { count: "exact", head: true }),
 
     adminClient.from("wc_deposits")
-      .select("id, user_id, amount, currency, payment_method, payment_reference, status, created_at, updated_at, reviewed_at, rejection_reason, metadata, wc_users(full_name, email)")
+      .select("id, user_id, amount, currency, payment_method, payment_reference, status, created_at, updated_at, reviewed_at, rejection_reason, metadata")
       .order("created_at", { ascending: false }).limit(200),
 
     adminClient.from("wc_withdrawals")
-      .select("id, user_id, amount, currency, net_payout, fee_amount, withdrawal_type, status, created_at, updated_at, reviewed_at, rejection_reason, destination_details, contract_id, wc_users(full_name, email)")
+      .select("id, user_id, amount, currency, net_payout, fee_amount, withdrawal_type, status, created_at, updated_at, reviewed_at, rejection_reason, destination_details, contract_id")
       .order("created_at", { ascending: false }).limit(200),
 
     adminClient.from("wc_migrations")
-      .select("id, user_id, capital_amount, topup_amount, total_new_principal, migration_type, target_plan_tier, status, created_at, updated_at, source_contract_id, wc_users(full_name, email)")
+      .select("id, user_id, capital_amount, topup_amount, total_new_principal, migration_type, target_plan_tier, status, created_at, updated_at, source_contract_id")
       .order("created_at", { ascending: false }).limit(200),
 
     adminClient.from("wc_users")
@@ -60,6 +60,15 @@ export async function GET() {
   const totalLockedCapital    = (wallets ?? []).reduce((s, w) => s + (Number(w.locked_capital)    || 0), 0);
   const totalAvailableBalance = (wallets ?? []).reduce((s, w) => s + (Number(w.available_balance) || 0), 0);
 
+  // Build user lookup map to avoid relying on FK joins
+  const userMap = Object.fromEntries(
+    (users ?? []).map(u => [u.id, { full_name: u.full_name, email: u.email }])
+  );
+
+  const depositsWithUsers    = (deposits    ?? []).map(d => ({ ...d, wc_users: userMap[d.user_id] ?? null }));
+  const withdrawalsWithUsers = (withdrawals ?? []).map(w => ({ ...w, wc_users: userMap[w.user_id] ?? null }));
+  const migrationsWithUsers  = (migrations  ?? []).map(m => ({ ...m, wc_users: userMap[m.user_id] ?? null }));
+
   return NextResponse.json({
     stats: {
       totalLockedCapital,
@@ -70,9 +79,9 @@ export async function GET() {
       activeContracts:    activeContracts    ?? 0,
       totalUsers:         totalUsers         ?? 0,
     },
-    deposits:    deposits    ?? [],
-    withdrawals: withdrawals ?? [],
-    migrations:  migrations  ?? [],
+    deposits:    depositsWithUsers,
+    withdrawals: withdrawalsWithUsers,
+    migrations:  migrationsWithUsers,
     users:       users       ?? [],
     contracts:   contracts   ?? [],
     plans:       plans       ?? [],
