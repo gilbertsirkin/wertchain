@@ -17,7 +17,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient, postLedgerTransaction } from "@/lib/ledger";
-import { mailer } from "@/lib/email/mailer";
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -89,13 +88,6 @@ export async function POST(req: NextRequest) {
   const userId = deposit.user_id;
   const now = new Date();
 
-  // Fetch user email for notifications
-  const { data: userRecord } = await adminClient
-    .from("wc_users")
-    .select("email, full_name")
-    .eq("id", userId)
-    .single();
-
   if (action === "reject") {
     await adminClient
       .from("wc_deposits")
@@ -117,17 +109,6 @@ export async function POST(req: NextRequest) {
       after_state: { deposit_status: "REJECTED" },
       reason: rejection_reason!,
     });
-
-    // Send rejection email (non-blocking)
-    if (userRecord?.email) {
-      mailer.depositRejected(userRecord.email, {
-        fullName: userRecord.full_name ?? "Investor",
-        amount,
-        currency: deposit.currency ?? "USDT",
-        depositId: deposit_id,
-        reason: rejection_reason,
-      }).catch((e) => console.error("[mailer] depositRejected failed:", e));
-    }
 
     return NextResponse.json({ message: "Deposit rejected.", deposit_id });
   }
@@ -200,17 +181,6 @@ export async function POST(req: NextRequest) {
       },
       reason: admin_notes ?? "Deposit confirmed by admin",
     });
-
-    // Send approval email (non-blocking)
-    if (userRecord?.email) {
-      mailer.depositApproved(userRecord.email, {
-        fullName: userRecord.full_name ?? "Investor",
-        amount,
-        currency: deposit.currency ?? "USDT",
-        newBalance: Number(wallet?.available_balance ?? 0) + amount,
-        depositId: deposit_id,
-      }).catch((e) => console.error("[mailer] depositApproved failed:", e));
-    }
 
     return NextResponse.json({
       message: `Deposit approved. $${amount.toFixed(2)} credited to user available balance.`,

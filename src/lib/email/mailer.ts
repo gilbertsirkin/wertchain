@@ -28,7 +28,7 @@ import {
   securityAlertEmail,
 } from './templates'
 
-const resend = new Resend(process.env.RESEND_API_KEY)
+
 
 const FROM = process.env.RESEND_FROM ?? 'Wertchain <noreply@wertchain.com>'
 const REPLY_TO = process.env.RESEND_REPLY_TO ?? 'support@wertchain.com'
@@ -39,6 +39,7 @@ async function send(to: string, subject: string, html: string) {
     return null
   }
   try {
+    const resend = new Resend(process.env.RESEND_API_KEY)
     const { data, error } = await resend.emails.send({
       from: FROM,
       replyTo: REPLY_TO,
@@ -254,4 +255,3 @@ export const mailer = {
   ) =>
     send(to, `Security Alert — New Sign-In to Your Wertchain Account`, securityAlertEmail(params)),
 }
-

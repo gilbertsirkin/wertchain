@@ -23,7 +23,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { adminClient, postLedgerTransaction } from "@/lib/ledger";
-import { mailer } from "@/lib/email/mailer";
+import { sendContractMaturedEmail } from "@/lib/email/mailer";
 
 const CRON_SECRET = process.env.CRON_SECRET;
 
@@ -147,16 +147,16 @@ export async function GET(req: NextRequest) {
       const profit = Number(contract.expected_profit ?? 0)
       adminClient.from("wc_users").select("email, full_name").eq("id", contract.user_id).single()
         .then(({ data: u }) => {
-          if (u?.email) mailer.profitCredited(u.email, {
-            fullName: u.full_name ?? "Investor",
-            planTier: contract.plan_tier ?? "WERTCHAIN_START",
-            principal,
-            profitAmount: profit,
-            totalCredited: principal + profit,
-            contractId: contract.id,
-            autoReinvest: false,
-          })
-        }).then(() => {}, () => {})
+          if (u) sendContractMaturedEmail(
+            { email: u.email, full_name: u.full_name },
+            {
+              plan_tier: contract.plan_tier ?? "Investment",
+              principal,
+              total_return: principal + profit,
+              matures_at: contract.maturity_date ?? new Date().toISOString(),
+            }
+          )
+        }).catch(() => {})
 
       processed++;
     } catch (err) {

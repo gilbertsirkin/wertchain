@@ -3,7 +3,6 @@ import { adminClient } from "@/lib/ledger";
 import { createClient } from "@/lib/supabase/server";
 
 export async function GET() {
-  // Verify admin
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -23,6 +22,8 @@ export async function GET() {
     { data: withdrawals },
     { data: migrations },
     { data: users },
+    { data: contracts },
+    { data: plans },
   ] = await Promise.all([
     adminClient.from("wc_wallet_balances").select("locked_capital, available_balance"),
     adminClient.from("wc_deposits").select("*", { count: "exact", head: true }).eq("status", "PENDING"),
@@ -30,28 +31,50 @@ export async function GET() {
     adminClient.from("wc_migrations").select("*", { count: "exact", head: true }).eq("status", "PENDING"),
     adminClient.from("wc_contracts").select("*", { count: "exact", head: true }).eq("state", "ACTIVE"),
     adminClient.from("wc_users").select("*", { count: "exact", head: true }),
-    adminClient.from("wc_deposits").select("*").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
-    adminClient.from("wc_withdrawals").select("*, wc_users(full_name, email)").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
-    adminClient.from("wc_migrations").select("*, wc_users(full_name, email)").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
-    adminClient.from("wc_users").select("*, wc_wallet_balances(available_balance, locked_capital)").order("created_at", { ascending: false }).limit(100),
+
+    adminClient.from("wc_deposits")
+      .select("id, user_id, amount, currency, payment_method, payment_reference, status, created_at, updated_at, reviewed_at, rejection_reason, metadata, wc_users(full_name, email)")
+      .order("created_at", { ascending: false }).limit(200),
+
+    adminClient.from("wc_withdrawals")
+      .select("id, user_id, amount, currency, net_payout, fee_amount, withdrawal_type, status, created_at, updated_at, reviewed_at, rejection_reason, destination_details, contract_id, wc_users(full_name, email)")
+      .order("created_at", { ascending: false }).limit(200),
+
+    adminClient.from("wc_migrations")
+      .select("id, user_id, capital_amount, topup_amount, total_new_principal, migration_type, target_plan_tier, status, created_at, updated_at, source_contract_id, wc_users(full_name, email)")
+      .order("created_at", { ascending: false }).limit(200),
+
+    adminClient.from("wc_users")
+      .select("id, full_name, email, kyc_status, is_suspended, is_active, created_at, updated_at, wc_wallet_balances(available_balance, locked_capital, pending_release_capital, pending_profit)")
+      .order("created_at", { ascending: false }).limit(500),
+
+    adminClient.from("wc_contracts")
+      .select("id, user_id, plan_tier, state, principal_amount, expected_profit, profit_credited, daily_profit_amount, profit_rate_snapshot, activated_at, maturity_date, auto_reinvest, created_at, wc_users(full_name, email)")
+      .order("created_at", { ascending: false }).limit(500),
+
+    adminClient.from("wc_investment_plans")
+      .select("id, label, tier, profit_rate, duration_days, min_amount, max_amount, is_active")
+      .order("profit_rate", { ascending: true }),
   ]);
 
-  const totalLockedCapital = (wallets ?? []).reduce((s, w) => s + (w.locked_capital as number), 0);
-  const totalAvailableBalance = (wallets ?? []).reduce((s, w) => s + (w.available_balance as number), 0);
+  const totalLockedCapital    = (wallets ?? []).reduce((s, w) => s + (Number(w.locked_capital)    || 0), 0);
+  const totalAvailableBalance = (wallets ?? []).reduce((s, w) => s + (Number(w.available_balance) || 0), 0);
 
   return NextResponse.json({
     stats: {
       totalLockedCapital,
       totalAvailableBalance,
-      pendingDeposits: pendingDeposits ?? 0,
+      pendingDeposits:    pendingDeposits    ?? 0,
       pendingWithdrawals: pendingWithdrawals ?? 0,
-      pendingMigrations: pendingMigrations ?? 0,
-      activeContracts: activeContracts ?? 0,
-      totalUsers: totalUsers ?? 0,
+      pendingMigrations:  pendingMigrations  ?? 0,
+      activeContracts:    activeContracts    ?? 0,
+      totalUsers:         totalUsers         ?? 0,
     },
-    deposits: deposits ?? [],
+    deposits:    deposits    ?? [],
     withdrawals: withdrawals ?? [],
-    migrations: migrations ?? [],
-    users: users ?? [],
+    migrations:  migrations  ?? [],
+    users:       users       ?? [],
+    contracts:   contracts   ?? [],
+    plans:       plans       ?? [],
   });
 }

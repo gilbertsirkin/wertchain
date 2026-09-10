@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, Suspense } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useState, useEffect, Suspense } from 'react'
+import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { createClient } from '@/lib/supabase/client'
 
 const CURRENCIES = [
   { code: 'USDT_TRC20', label: 'USDT (TRC20)' },
@@ -17,6 +18,14 @@ type Step = 'choose' | 'pay' | 'done'
 
 function DepositContent() {
   const params = useSearchParams()
+  const router = useRouter()
+  const supabase = createClient()
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) router.replace('/signin?redirectTo=/deposit')
+    })
+  }, [supabase, router])
 
   const planId = params.get('plan_id') ?? ''
   const planLabel = params.get('plan_label') ?? ''

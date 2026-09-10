@@ -1,0 +1,658 @@
+diff --git a/src/app/admin/page.tsx b/src/app/admin/page.tsx
+index b868573..cec6ed4 100644
+--- a/src/app/admin/page.tsx
++++ b/src/app/admin/page.tsx
+@@ -2,7 +2,7 @@
+ 
+ import Link from 'next/link'
+ import LogoutButton from '@/components/LogoutButton'
+-import { useState, useEffect, useCallback } from 'react'
++import { useState, useEffect, useCallback, useRef } from 'react'
+ 
+ // ── types ──────────────────────────────────────────────────────────────────
+ type Tab = 'overview' | 'deposits' | 'withdrawals' | 'migrations' | 'users'
+@@ -69,12 +69,12 @@ const fmtDate = (d: string) =>
+   new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+ 
+ const STATUS_COLORS: Record<string, string> = {
+-  PENDING:   'text-amber-400 bg-amber-400/10 border-amber-400/20',
+-  APPROVED:  'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
+-  REJECTED:  'text-red-400 bg-red-400/10 border-red-400/20',
+-  CANCELLED: 'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
+-  VERIFIED:  'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
+-  UNVERIFIED:'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
++  PENDING:        'text-amber-400 bg-amber-400/10 border-amber-400/20',
++  APPROVED:       'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
++  REJECTED:       'text-red-400 bg-red-400/10 border-red-400/20',
++  CANCELLED:      'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
++  VERIFIED:       'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
++  UNVERIFIED:     'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
+   PENDING_REVIEW: 'text-blue-400 bg-blue-400/10 border-blue-400/20',
+ }
+ 
+@@ -86,7 +86,6 @@ function Badge({ status }: { status: string }) {
+   )
+ }
+ 
+-// ── stat card ──────────────────────────────────────────────────────────────
+ function StatCard({ label, value, sub, accent = false }: { label: string; value: string; sub?: string; accent?: boolean }) {
+   return (
+     <div className={`rounded-lg border p-4 flex flex-col gap-1 ${accent ? 'border-amber-500/30 bg-amber-500/5' : 'border-[#1E2A3B] bg-[#111827]'}`}>
+@@ -97,24 +96,89 @@ function StatCard({ label, value, sub, accent = false }: { label: string; value:
+   )
+ }
+ 
++// ── reject modal ──────────────────────────────────────────────────────────
++function RejectModal({
++  title,
++  onConfirm,
++  onCancel,
++  loading,
++}: {
++  title: string
++  onConfirm: (reason: string) => void
++  onCancel: () => void
++  loading: boolean
++}) {
++  const [reason, setReason] = useState('')
++  const inputRef = useRef<HTMLTextAreaElement>(null)
++
++  useEffect(() => { inputRef.current?.focus() }, [])
++
++  return (
++    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
++      <div className="w-full max-w-md rounded-xl border border-[#1E2A3B] bg-[#0F1624] p-6 space-y-4 shadow-2xl">
++        <h3 className="text-white font-semibold">{title}</h3>
++        <div>
++          <label className="text-xs text-zinc-500 uppercase tracking-widest block mb-1.5">
++            Rejection Reason <span className="text-red-400">*</span>
++          </label>
++          <textarea
++            ref={inputRef}
++            value={reason}
++            onChange={e => setReason(e.target.value)}
++            rows={3}
++            className="w-full bg-[#0A0F1E] border border-[#1E2A3B] rounded-lg px-3 py-2.5 text-white text-sm font-mono resize-none focus:outline-none focus:border-red-500/60 transition-colors"
++            placeholder="State the reason clearly — this is shown to the user."
++          />
++        </div>
++        <div className="flex gap-3">
++          <button
++            onClick={onCancel}
++            disabled={loading}
++            className="flex-1 py-2.5 rounded-lg border border-[#1E2A3B] text-zinc-400 text-sm hover:text-white hover:border-zinc-600 transition-colors disabled:opacity-40"
++          >
++            Cancel
++          </button>
++          <button
++            onClick={() => { if (reason.trim()) onConfirm(reason.trim()) }}
++            disabled={loading || !reason.trim()}
++            className="flex-1 py-2.5 rounded-lg bg-red-700 hover:bg-red-600 disabled:opacity-40 text-white text-sm font-medium transition-colors"
++          >
++            {loading ? 'Rejecting…' : 'Confirm Reject'}
++          </button>
++        </div>
++      </div>
++    </div>
++  )
++}
++
+ // ── main component ─────────────────────────────────────────────────────────
+ export default function AdminPanel() {
+-  const [tab, setTab] = useState<Tab>('overview')
+-  const [stats, setStats] = useState<Stats | null>(null)
+-  const [deposits, setDeposits] = useState<Deposit[]>([])
++  const [tab, setTab]               = useState<Tab>('overview')
++  const [stats, setStats]           = useState<Stats | null>(null)
++  const [deposits, setDeposits]     = useState<Deposit[]>([])
+   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([])
+   const [migrations, setMigrations] = useState<Migration[]>([])
+-  const [users, setUsers] = useState<User[]>([])
+-  const [loading, setLoading] = useState(true)
++  const [users, setUsers]           = useState<User[]>([])
++  const [loading, setLoading]       = useState(true)
+   const [actionLoading, setActionLoading] = useState<string | null>(null)
+-  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
++  const [toast, setToast]           = useState<{ msg: string; ok: boolean } | null>(null)
++  const [rejectModal, setRejectModal] = useState<{
++    type: 'deposit' | 'withdrawal' | 'migration'
++    id: string
++    title: string
++  } | null>(null)
++
++  // Filter state per tab
++  const [depositFilter, setDepositFilter]         = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('PENDING')
++  const [withdrawalFilter, setWithdrawalFilter]   = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('PENDING')
++  const [migrationFilter, setMigrationFilter]     = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('PENDING')
+ 
+   const showToast = (msg: string, ok: boolean) => {
+     setToast({ msg, ok })
+     setTimeout(() => setToast(null), 3500)
+   }
+ 
+-  // ── data fetchers ──────────────────────────────────────────────────────
++  // Load once on mount only — tab switching does NOT re-fetch
+   const loadAll = useCallback(async () => {
+     setLoading(true)
+     try {
+@@ -126,16 +190,16 @@ export default function AdminPanel() {
+       setWithdrawals(data.withdrawals)
+       setMigrations(data.migrations)
+       setUsers(data.users)
+-    } catch (e: any) {
+-      showToast(e.message, false)
++    } catch (e: unknown) {
++      showToast((e as Error).message, false)
+     } finally {
+       setLoading(false)
+     }
+   }, [])
+ 
+-  useEffect(() => { loadAll() }, [loadAll, tab])
++  useEffect(() => { loadAll() }, [loadAll])
+ 
+-  // ── actions ────────────────────────────────────────────────────────────
++  // ── actions ──────────────────────────────────────────────────────────────
+   async function approveDeposit(id: string) {
+     setActionLoading(id)
+     try {
+@@ -147,7 +211,8 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Deposit approved. Ledger posted.', true)
+-      await loadAll()
++      setDeposits(prev => prev.map(d => d.id === id ? { ...d, status: 'APPROVED' } : d))
++      setStats(prev => prev ? { ...prev, pendingDeposits: Math.max(0, prev.pendingDeposits - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+@@ -155,9 +220,7 @@ export default function AdminPanel() {
+     }
+   }
+ 
+-  async function rejectDeposit(id: string) {
+-    const reason = prompt('Rejection reason (required):')
+-    if (!reason) return
++  async function rejectDeposit(id: string, reason: string) {
+     setActionLoading(id)
+     try {
+       const res = await fetch('/api/admin/deposits/approve', {
+@@ -168,11 +231,13 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Deposit rejected.', true)
+-      await loadAll()
++      setDeposits(prev => prev.map(d => d.id === id ? { ...d, status: 'REJECTED' } : d))
++      setStats(prev => prev ? { ...prev, pendingDeposits: Math.max(0, prev.pendingDeposits - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+       setActionLoading(null)
++      setRejectModal(null)
+     }
+   }
+ 
+@@ -187,7 +252,8 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Withdrawal approved.', true)
+-      await loadAll()
++      setWithdrawals(prev => prev.map(w => w.id === id ? { ...w, status: 'APPROVED' } : w))
++      setStats(prev => prev ? { ...prev, pendingWithdrawals: Math.max(0, prev.pendingWithdrawals - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+@@ -195,9 +261,7 @@ export default function AdminPanel() {
+     }
+   }
+ 
+-  async function rejectWithdrawal(id: string) {
+-    const reason = prompt('Rejection reason (required):')
+-    if (!reason) return
++  async function rejectWithdrawal(id: string, reason: string) {
+     setActionLoading(id)
+     try {
+       const res = await fetch('/api/admin/withdrawals/approve', {
+@@ -208,11 +272,13 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Withdrawal rejected. Funds returned.', true)
+-      await loadAll()
++      setWithdrawals(prev => prev.map(w => w.id === id ? { ...w, status: 'REJECTED' } : w))
++      setStats(prev => prev ? { ...prev, pendingWithdrawals: Math.max(0, prev.pendingWithdrawals - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+       setActionLoading(null)
++      setRejectModal(null)
+     }
+   }
+ 
+@@ -227,7 +293,8 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Migration approved. New contract created.', true)
+-      await loadAll()
++      setMigrations(prev => prev.map(m => m.id === id ? { ...m, status: 'APPROVED' } : m))
++      setStats(prev => prev ? { ...prev, pendingMigrations: Math.max(0, prev.pendingMigrations - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+@@ -235,9 +302,7 @@ export default function AdminPanel() {
+     }
+   }
+ 
+-  async function rejectMigration(id: string) {
+-    const reason = prompt('Rejection reason (required):')
+-    if (!reason) return
++  async function rejectMigration(id: string, reason: string) {
+     setActionLoading(id)
+     try {
+       const res = await fetch('/api/admin/migrations/approve', {
+@@ -248,26 +313,51 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Migration rejected.', true)
+-      await loadAll()
++      setMigrations(prev => prev.map(m => m.id === id ? { ...m, status: 'REJECTED' } : m))
++      setStats(prev => prev ? { ...prev, pendingMigrations: Math.max(0, prev.pendingMigrations - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+       setActionLoading(null)
++      setRejectModal(null)
+     }
+   }
+ 
+-  // ── tab content ────────────────────────────────────────────────────────
++  // Dispatch to correct handler when modal confirms
++  function handleModalConfirm(reason: string) {
++    if (!rejectModal) return
++    if (rejectModal.type === 'deposit')    rejectDeposit(rejectModal.id, reason)
++    if (rejectModal.type === 'withdrawal') rejectWithdrawal(rejectModal.id, reason)
++    if (rejectModal.type === 'migration')  rejectMigration(rejectModal.id, reason)
++  }
++
+   const TABS: { id: Tab; label: string; badge?: number }[] = [
+-    { id: 'overview',     label: 'Overview' },
+-    { id: 'deposits',     label: 'Deposits',    badge: stats?.pendingDeposits },
+-    { id: 'withdrawals',  label: 'Withdrawals', badge: stats?.pendingWithdrawals },
+-    { id: 'migrations',   label: 'Migrations',  badge: stats?.pendingMigrations },
+-    { id: 'users',        label: 'Users' },
++    { id: 'overview',    label: 'Overview' },
++    { id: 'deposits',    label: 'Deposits',    badge: stats?.pendingDeposits },
++    { id: 'withdrawals', label: 'Withdrawals', badge: stats?.pendingWithdrawals },
++    { id: 'migrations',  label: 'Migrations',  badge: stats?.pendingMigrations },
++    { id: 'users',       label: 'Users' },
+   ]
+ 
++  const STATUS_FILTERS = ['ALL', 'PENDING', 'APPROVED', 'REJECTED'] as const
++
++  const visibleDeposits    = depositFilter    === 'ALL' ? deposits    : deposits.filter(d => d.status === depositFilter)
++  const visibleWithdrawals = withdrawalFilter === 'ALL' ? withdrawals : withdrawals.filter(w => w.status === withdrawalFilter)
++  const visibleMigrations  = migrationFilter  === 'ALL' ? migrations  : migrations.filter(m => m.status === migrationFilter)
++
+   return (
+     <div className="min-h-screen bg-[#0A0F1E] text-white font-sans">
+ 
++      {/* ── reject modal ── */}
++      {rejectModal && (
++        <RejectModal
++          title={`Reject ${rejectModal.title}`}
++          onConfirm={handleModalConfirm}
++          onCancel={() => setRejectModal(null)}
++          loading={actionLoading !== null}
++        />
++      )}
++
+       {/* ── toast ── */}
+       {toast && (
+         <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg border text-sm font-medium shadow-xl transition-all
+@@ -332,10 +422,10 @@ export default function AdminPanel() {
+             {tab === 'overview' && stats && (
+               <div className="space-y-6">
+                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+-                  <StatCard label="Total Locked Capital"    value={fmt(stats.totalLockedCapital)}    accent />
+-                  <StatCard label="Available Balances"      value={fmt(stats.totalAvailableBalance)} />
+-                  <StatCard label="Active Contracts"        value={String(stats.activeContracts)} />
+-                  <StatCard label="Registered Users"        value={String(stats.totalUsers)} />
++                  <StatCard label="Total Locked Capital"  value={fmt(stats.totalLockedCapital)}    accent />
++                  <StatCard label="Available Balances"    value={fmt(stats.totalAvailableBalance)} />
++                  <StatCard label="Active Contracts"      value={String(stats.activeContracts)} />
++                  <StatCard label="Registered Users"      value={String(stats.totalUsers)} />
+                 </div>
+                 <div className="grid grid-cols-3 gap-3">
+                   <StatCard label="Pending Deposits"    value={String(stats.pendingDeposits)}    sub="Awaiting approval" />
+@@ -344,8 +434,8 @@ export default function AdminPanel() {
+                 </div>
+                 <div className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-4">
+                   <p className="text-xs text-zinc-600 font-mono">
+-                    All balances are derived from the master ledger. The canonical balance for any user can be reconstructed with:<br />
+-                    <span className="text-zinc-400">SELECT SUM(amount) FILTER (WHERE direction = 'CREDIT') - SUM(amount) FILTER (WHERE direction = 'DEBIT') FROM wc_ledger_entries WHERE account_type = 'USER_WALLET' AND user_id = :id</span>
++                    All balances are derived from the master ledger. Canonical balance per user:<br />
++                    <span className="text-zinc-400">SELECT SUM(amount) FILTER (WHERE direction = &apos;CREDIT&apos;) - SUM(amount) FILTER (WHERE direction = &apos;DEBIT&apos;) FROM wc_ledger_entries WHERE account_type = &apos;USER_WALLET&apos; AND user_id = :id</span>
+                   </p>
+                 </div>
+               </div>
+@@ -354,12 +444,24 @@ export default function AdminPanel() {
+             {/* ── DEPOSITS ── */}
+             {tab === 'deposits' && (
+               <div className="space-y-3">
+-                <div className="flex items-center justify-between mb-4">
+-                  <h2 className="text-sm font-semibold text-zinc-300">All Deposits</h2>
+-                  <span className="text-xs text-zinc-600 font-mono">{deposits.length} records</span>
++                <div className="flex items-center justify-between mb-2">
++                  <h2 className="text-sm font-semibold text-zinc-300">Deposits</h2>
++                  <div className="flex gap-1">
++                    {STATUS_FILTERS.map(f => (
++                      <button
++                        key={f}
++                        onClick={() => setDepositFilter(f)}
++                        className={`px-2.5 py-1 rounded text-xs font-mono transition-colors
++                          ${depositFilter === f ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
++                      >
++                        {f}
++                      </button>
++                    ))}
++                  </div>
+                 </div>
+-                {deposits.length === 0 && <p className="text-zinc-600 text-sm">No deposits yet.</p>}
+-                {deposits.map(d => (
++                <p className="text-xs text-zinc-600 font-mono mb-3">{visibleDeposits.length} records</p>
++                {visibleDeposits.length === 0 && <p className="text-zinc-600 text-sm">No deposits matching filter.</p>}
++                {visibleDeposits.map(d => (
+                   <div key={d.id} className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-4">
+                     <div className="flex flex-wrap items-start justify-between gap-3">
+                       <div className="space-y-1">
+@@ -367,7 +469,7 @@ export default function AdminPanel() {
+                           <span className="text-white font-mono font-semibold">{fmt(d.amount)}</span>
+                           <Badge status={d.status} />
+                         </div>
+-                        <p className="text-xs text-zinc-400">{d.wc_users?.full_name} · {d.wc_users?.email}</p>
++                        <p className="text-xs text-zinc-400">{d.wc_users?.full_name ?? '—'} · {d.wc_users?.email ?? '—'}</p>
+                         <p className="text-xs text-zinc-600 font-mono">{d.payment_method} · ref: {d.payment_reference ?? '—'}</p>
+                         <p className="text-xs text-zinc-700">{fmtDate(d.created_at)}</p>
+                       </div>
+@@ -381,7 +483,7 @@ export default function AdminPanel() {
+                             {actionLoading === d.id ? '…' : 'Approve'}
+                           </button>
+                           <button
+-                            onClick={() => rejectDeposit(d.id)}
++                            onClick={() => setRejectModal({ type: 'deposit', id: d.id, title: `deposit of ${fmt(d.amount)} from ${d.wc_users?.full_name ?? 'user'}` })}
+                             disabled={actionLoading === d.id}
+                             className="px-3 py-1.5 rounded bg-red-900/60 hover:bg-red-800 disabled:opacity-40 text-red-300 text-xs font-medium transition-colors"
+                           >
+@@ -398,12 +500,24 @@ export default function AdminPanel() {
+             {/* ── WITHDRAWALS ── */}
+             {tab === 'withdrawals' && (
+               <div className="space-y-3">
+-                <div className="flex items-center justify-between mb-4">
+-                  <h2 className="text-sm font-semibold text-zinc-300">All Withdrawals</h2>
+-                  <span className="text-xs text-zinc-600 font-mono">{withdrawals.length} records</span>
++                <div className="flex items-center justify-between mb-2">
++                  <h2 className="text-sm font-semibold text-zinc-300">Withdrawals</h2>
++                  <div className="flex gap-1">
++                    {STATUS_FILTERS.map(f => (
++                      <button
++                        key={f}
++                        onClick={() => setWithdrawalFilter(f)}
++                        className={`px-2.5 py-1 rounded text-xs font-mono transition-colors
++                          ${withdrawalFilter === f ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
++                      >
++                        {f}
++                      </button>
++                    ))}
++                  </div>
+                 </div>
+-                {withdrawals.length === 0 && <p className="text-zinc-600 text-sm">No withdrawals yet.</p>}
+-                {withdrawals.map(w => (
++                <p className="text-xs text-zinc-600 font-mono mb-3">{visibleWithdrawals.length} records</p>
++                {visibleWithdrawals.length === 0 && <p className="text-zinc-600 text-sm">No withdrawals matching filter.</p>}
++                {visibleWithdrawals.map(w => (
+                   <div key={w.id} className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-4">
+                     <div className="flex flex-wrap items-start justify-between gap-3">
+                       <div className="space-y-1">
+@@ -412,7 +526,7 @@ export default function AdminPanel() {
+                           <span className="text-xs text-zinc-500 font-mono">{w.withdrawal_type}</span>
+                           <Badge status={w.status} />
+                         </div>
+-                        <p className="text-xs text-zinc-400">{w.wc_users?.full_name} · {w.wc_users?.email}</p>
++                        <p className="text-xs text-zinc-400">{w.wc_users?.full_name ?? '—'} · {w.wc_users?.email ?? '—'}</p>
+                         <p className="text-xs text-zinc-600 font-mono">
+                           {Object.entries(w.destination_details ?? {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+                         </p>
+@@ -428,7 +542,7 @@ export default function AdminPanel() {
+                             {actionLoading === w.id ? '…' : 'Approve'}
+                           </button>
+                           <button
+-                            onClick={() => rejectWithdrawal(w.id)}
++                            onClick={() => setRejectModal({ type: 'withdrawal', id: w.id, title: `withdrawal of ${fmt(w.amount)} by ${w.wc_users?.full_name ?? 'user'}` })}
+                             disabled={actionLoading === w.id}
+                             className="px-3 py-1.5 rounded bg-red-900/60 hover:bg-red-800 disabled:opacity-40 text-red-300 text-xs font-medium transition-colors"
+                           >
+@@ -445,12 +559,24 @@ export default function AdminPanel() {
+             {/* ── MIGRATIONS ── */}
+             {tab === 'migrations' && (
+               <div className="space-y-3">
+-                <div className="flex items-center justify-between mb-4">
+-                  <h2 className="text-sm font-semibold text-zinc-300">All Migrations</h2>
+-                  <span className="text-xs text-zinc-600 font-mono">{migrations.length} records</span>
++                <div className="flex items-center justify-between mb-2">
++                  <h2 className="text-sm font-semibold text-zinc-300">Migrations</h2>
++                  <div className="flex gap-1">
++                    {STATUS_FILTERS.map(f => (
++                      <button
++                        key={f}
++                        onClick={() => setMigrationFilter(f)}
++                        className={`px-2.5 py-1 rounded text-xs font-mono transition-colors
++                          ${migrationFilter === f ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
++                      >
++                        {f}
++                      </button>
++                    ))}
++                  </div>
+                 </div>
+-                {migrations.length === 0 && <p className="text-zinc-600 text-sm">No migrations yet.</p>}
+-                {migrations.map(m => (
++                <p className="text-xs text-zinc-600 font-mono mb-3">{visibleMigrations.length} records</p>
++                {visibleMigrations.length === 0 && <p className="text-zinc-600 text-sm">No migrations matching filter.</p>}
++                {visibleMigrations.map(m => (
+                   <div key={m.id} className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-4">
+                     <div className="flex flex-wrap items-start justify-between gap-3">
+                       <div className="space-y-1">
+@@ -462,7 +588,7 @@ export default function AdminPanel() {
+                           <span className="text-xs text-zinc-500 font-mono">{m.migration_type}</span>
+                           <Badge status={m.status} />
+                         </div>
+-                        <p className="text-xs text-zinc-400">{m.wc_users?.full_name} · {m.wc_users?.email}</p>
++                        <p className="text-xs text-zinc-400">{m.wc_users?.full_name ?? '—'} · {m.wc_users?.email ?? '—'}</p>
+                         <p className="text-xs text-zinc-600 font-mono">Target: {m.target_plan_tier}</p>
+                         <p className="text-xs text-zinc-700">{fmtDate(m.created_at)}</p>
+                       </div>
+@@ -476,7 +602,7 @@ export default function AdminPanel() {
+                             {actionLoading === m.id ? '…' : 'Approve'}
+                           </button>
+                           <button
+-                            onClick={() => rejectMigration(m.id)}
++                            onClick={() => setRejectModal({ type: 'migration', id: m.id, title: `migration of ${fmt(m.capital_amount)} by ${m.wc_users?.full_name ?? 'user'}` })}
+                             disabled={actionLoading === m.id}
+                             className="px-3 py-1.5 rounded bg-red-900/60 hover:bg-red-800 disabled:opacity-40 text-red-300 text-xs font-medium transition-colors"
+                           >
+@@ -531,4 +657,4 @@ export default function AdminPanel() {
+       </div>
+     </div>
+   )
+-}
+\ No newline at end of file
++}
+diff --git a/src/app/api/admin/stats/route.ts b/src/app/api/admin/stats/route.ts
+index f633a0a..f836a8b 100644
+--- a/src/app/api/admin/stats/route.ts
++++ b/src/app/api/admin/stats/route.ts
+@@ -3,7 +3,7 @@ import { adminClient } from "@/lib/ledger";
+ import { createClient } from "@/lib/supabase/server";
+ 
+ export async function GET() {
+-  // Verify admin
++  // Auth
+   const supabase = await createClient();
+   const { data: { user } } = await supabase.auth.getUser();
+   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+@@ -30,28 +30,41 @@ export async function GET() {
+     adminClient.from("wc_migrations").select("*", { count: "exact", head: true }).eq("status", "PENDING"),
+     adminClient.from("wc_contracts").select("*", { count: "exact", head: true }).eq("state", "ACTIVE"),
+     adminClient.from("wc_users").select("*", { count: "exact", head: true }),
+-    adminClient.from("wc_deposits").select("*").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
+-    adminClient.from("wc_withdrawals").select("*, wc_users(full_name, email)").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
+-    adminClient.from("wc_migrations").select("*, wc_users(full_name, email)").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
+-    adminClient.from("wc_users").select("*, wc_wallet_balances(available_balance, locked_capital)").order("created_at", { ascending: false }).limit(100),
++    // Fixed: include wc_users join so full_name/email render correctly
++    adminClient.from("wc_deposits")
++      .select("*, wc_users(full_name, email)")
++      .order("created_at", { ascending: false })
++      .limit(100),
++    adminClient.from("wc_withdrawals")
++      .select("*, wc_users(full_name, email)")
++      .order("created_at", { ascending: false })
++      .limit(100),
++    adminClient.from("wc_migrations")
++      .select("*, wc_users(full_name, email)")
++      .order("created_at", { ascending: false })
++      .limit(100),
++    adminClient.from("wc_users")
++      .select("*, wc_wallet_balances(available_balance, locked_capital)")
++      .order("created_at", { ascending: false })
++      .limit(200),
+   ]);
+ 
+-  const totalLockedCapital = (wallets ?? []).reduce((s, w) => s + (w.locked_capital as number), 0);
++  const totalLockedCapital    = (wallets ?? []).reduce((s, w) => s + (w.locked_capital    as number), 0);
+   const totalAvailableBalance = (wallets ?? []).reduce((s, w) => s + (w.available_balance as number), 0);
+ 
+   return NextResponse.json({
+     stats: {
+       totalLockedCapital,
+       totalAvailableBalance,
+-      pendingDeposits: pendingDeposits ?? 0,
++      pendingDeposits:    pendingDeposits    ?? 0,
+       pendingWithdrawals: pendingWithdrawals ?? 0,
+-      pendingMigrations: pendingMigrations ?? 0,
+-      activeContracts: activeContracts ?? 0,
+-      totalUsers: totalUsers ?? 0,
++      pendingMigrations:  pendingMigrations  ?? 0,
++      activeContracts:    activeContracts    ?? 0,
++      totalUsers:         totalUsers         ?? 0,
+     },
+-    deposits: deposits ?? [],
++    deposits:    deposits    ?? [],
+     withdrawals: withdrawals ?? [],
+-    migrations: migrations ?? [],
+-    users: users ?? [],
++    migrations:  migrations  ?? [],
++    users:       users       ?? [],
+   });
+ }
+diff --git a/src/app/dashboard/page.tsx b/src/app/dashboard/page.tsx
+index 5b0f6d2..a8ca581 100644
+--- a/src/app/dashboard/page.tsx
++++ b/src/app/dashboard/page.tsx
+@@ -184,6 +184,7 @@ export default function Dashboard() {
+             <span className="font-semibold text-white">Wertchain</span>
+           </div>
+           <div className="flex items-center gap-4">
++            <Link href="/deposit" className="text-xs text-zinc-400 hover:text-white transition-colors">Deposit</Link>
+             <Link href="/invest" className="text-xs text-zinc-400 hover:text-white transition-colors">Invest</Link>
+             <Link href="/wallet" className="text-xs text-zinc-400 hover:text-white transition-colors">Wallet</Link>
+             <div className="h-4 w-px bg-[#1E2A3B]" />
+@@ -207,15 +208,19 @@ export default function Dashboard() {
+           <div className="col-span-2 sm:col-span-2 rounded-xl border border-amber-500/30 bg-gradient-to-br from-amber-900/20 to-transparent p-5">
+             <p className="text-xs text-amber-400/70 uppercase tracking-widest mb-1">Available Balance</p>
+             <p className="text-3xl font-mono font-bold text-amber-400">{fmt(wallet?.available_balance ?? 0)}</p>
+-            <div className="mt-3 flex gap-2">
+-              <Link href="/wallet?action=withdraw"
++            <div className="mt-3 flex gap-2 flex-wrap">
++              <Link href="/deposit"
+                 className="px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-black text-xs font-semibold transition-colors">
+-                Withdraw
++                Deposit
+               </Link>
+               <Link href="/invest"
+                 className="px-3 py-1.5 rounded border border-amber-500/40 hover:border-amber-400 text-amber-400 text-xs font-medium transition-colors">
+                 Invest
+               </Link>
++              <Link href="/wallet"
++                className="px-3 py-1.5 rounded border border-[#1E2A3B] hover:border-zinc-600 text-zinc-400 text-xs font-medium transition-colors">
++                Withdraw
++              </Link>
+             </div>
+           </div>
+           <div className="rounded-xl border border-[#1E2A3B] bg-[#111827] p-4">
+@@ -226,6 +231,15 @@ export default function Dashboard() {
+             <p className="text-xs text-zinc-500 uppercase tracking-widest mb-1">Pending Release</p>
+             <p className="text-xl font-mono font-semibold text-white">{fmt(wallet?.pending_release_capital ?? 0)}</p>
+           </div>
++          {(wallet?.pending_profit ?? 0) > 0 && (
++            <div className="col-span-2 sm:col-span-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 flex items-center justify-between">
++              <div>
++                <p className="text-xs text-emerald-400/70 uppercase tracking-widest mb-0.5">Accruing Profit</p>
++                <p className="text-sm text-zinc-400">Profit credited to your balance at contract maturity</p>
++              </div>
++              <p className="text-xl font-mono font-semibold text-emerald-400">+{fmt(wallet?.pending_profit ?? 0)}</p>
++            </div>
++          )}
+         </div>
+ 
+         {/* ── active contracts ── */}
+diff --git a/src/app/deposit/page.tsx b/src/app/deposit/page.tsx
+index fc10207..3e9441d 100644
+--- a/src/app/deposit/page.tsx
++++ b/src/app/deposit/page.tsx
+@@ -1,8 +1,9 @@
+ 'use client'
+ 
+-import { useState, Suspense } from 'react'
+-import { useSearchParams } from 'next/navigation'
++import { useState, useEffect, Suspense } from 'react'
++import { useSearchParams, useRouter } from 'next/navigation'
+ import Link from 'next/link'
++import { createClient } from '@/lib/supabase/client'
+ 
+ const CURRENCIES = [
+   { code: 'USDT_TRC20', label: 'USDT (TRC20)' },
+@@ -17,6 +18,14 @@ type Step = 'choose' | 'pay' | 'done'
+ 
+ function DepositContent() {
+   const params = useSearchParams()
++  const router = useRouter()
++  const supabase = createClient()
++
++  useEffect(() => {
++    supabase.auth.getUser().then(({ data: { user } }) => {
++      if (!user) router.replace('/signin?redirectTo=/deposit')
++    })
++  }, [supabase, router])
+ 
+   const planId = params.get('plan_id') ?? ''
+   const planLabel = params.get('plan_label') ?? ''
+diff --git a/src/middleware.ts b/src/middleware.ts
+new file mode 100644
+index 0000000..dc2d535
+--- /dev/null
++++ b/src/middleware.ts
+@@ -0,0 +1,16 @@
++import { type NextRequest } from 'next/server'
++import { updateSession } from '@/lib/supabase/middleware'
++
++export async function middleware(request: NextRequest) {
++  return updateSession(request)
++}
++
++export const config = {
++  matcher: [
++    /*
++     * Match all paths except static files, images, and Next internals.
++     * This ensures the session refresh + auth guard runs on every navigation.
++     */
++    '/((?!_next/static|_next/image|favicon.ico|images/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
++  ],
++}

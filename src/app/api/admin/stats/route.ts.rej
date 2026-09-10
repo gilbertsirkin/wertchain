@@ -1,0 +1,64 @@
+diff a/src/app/api/admin/stats/route.ts b/src/app/api/admin/stats/route.ts	(rejected hunks)
+@@ -3,7 +3,7 @@ import { adminClient } from "@/lib/ledger";
+ import { createClient } from "@/lib/supabase/server";
+ 
+ export async function GET() {
+-  // Verify admin
++  // Auth
+   const supabase = await createClient();
+   const { data: { user } } = await supabase.auth.getUser();
+   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+@@ -30,28 +30,41 @@ export async function GET() {
+     adminClient.from("wc_migrations").select("*", { count: "exact", head: true }).eq("status", "PENDING"),
+     adminClient.from("wc_contracts").select("*", { count: "exact", head: true }).eq("state", "ACTIVE"),
+     adminClient.from("wc_users").select("*", { count: "exact", head: true }),
+-    adminClient.from("wc_deposits").select("*").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
+-    adminClient.from("wc_withdrawals").select("*, wc_users(full_name, email)").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
+-    adminClient.from("wc_migrations").select("*, wc_users(full_name, email)").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
+-    adminClient.from("wc_users").select("*, wc_wallet_balances(available_balance, locked_capital)").order("created_at", { ascending: false }).limit(100),
++    // Fixed: include wc_users join so full_name/email render correctly
++    adminClient.from("wc_deposits")
++      .select("*, wc_users(full_name, email)")
++      .order("created_at", { ascending: false })
++      .limit(100),
++    adminClient.from("wc_withdrawals")
++      .select("*, wc_users(full_name, email)")
++      .order("created_at", { ascending: false })
++      .limit(100),
++    adminClient.from("wc_migrations")
++      .select("*, wc_users(full_name, email)")
++      .order("created_at", { ascending: false })
++      .limit(100),
++    adminClient.from("wc_users")
++      .select("*, wc_wallet_balances(available_balance, locked_capital)")
++      .order("created_at", { ascending: false })
++      .limit(200),
+   ]);
+ 
+-  const totalLockedCapital = (wallets ?? []).reduce((s, w) => s + (w.locked_capital as number), 0);
++  const totalLockedCapital    = (wallets ?? []).reduce((s, w) => s + (w.locked_capital    as number), 0);
+   const totalAvailableBalance = (wallets ?? []).reduce((s, w) => s + (w.available_balance as number), 0);
+ 
+   return NextResponse.json({
+     stats: {
+       totalLockedCapital,
+       totalAvailableBalance,
+-      pendingDeposits: pendingDeposits ?? 0,
++      pendingDeposits:    pendingDeposits    ?? 0,
+       pendingWithdrawals: pendingWithdrawals ?? 0,
+-      pendingMigrations: pendingMigrations ?? 0,
+-      activeContracts: activeContracts ?? 0,
+-      totalUsers: totalUsers ?? 0,
++      pendingMigrations:  pendingMigrations  ?? 0,
++      activeContracts:    activeContracts    ?? 0,
++      totalUsers:         totalUsers         ?? 0,
+     },
+-    deposits: deposits ?? [],
++    deposits:    deposits    ?? [],
+     withdrawals: withdrawals ?? [],
+-    migrations: migrations ?? [],
+-    users: users ?? [],
++    migrations:  migrations  ?? [],
++    users:       users       ?? [],
+   });
+ }

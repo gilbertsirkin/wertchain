@@ -1,0 +1,484 @@
+diff a/src/app/dashboard/page.tsx b/src/app/dashboard/page.tsx	(rejected hunks)
+@@ -109,234 +60,311 @@ export default function Dashboard() {
+   const [togglingId, setTogglingId] = useState<string | null>(null)
+   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
+   const [user, setUser] = useState<{ full_name: string; email: string } | null>(null)
++  const [activeTab, setActiveTab] = useState<'portfolio' | 'activity'>('portfolio')
+ 
+   const showToast = (msg: string, ok: boolean) => {
+-    setToast({ msg, ok })
+-    setTimeout(() => setToast(null), 3500)
++    setToast({ msg, ok }); setTimeout(() => setToast(null), 3500)
+   }
+ 
+   const load = useCallback(async () => {
+     const { data: { user: authUser } } = await supabase.auth.getUser()
+     if (!authUser) return
+-
+     const [walletRes, contractsRes, userRes, ledgerRes] = await Promise.all([
+       supabase.from('wc_wallet_balances').select('*').eq('user_id', authUser.id).single(),
+       supabase.from('wc_contracts').select('*').eq('user_id', authUser.id).order('created_at', { ascending: false }),
+       supabase.from('wc_users').select('full_name, email').eq('id', authUser.id).single(),
+-      supabase.from('wc_ledger_transactions').select('id, entry_type, amount, description, effective_date, created_at')
+-        .eq('user_id', authUser.id).order('created_at', { ascending: false }).limit(30),
++      supabase.from('wc_ledger_transactions')
++        .select('id, entry_type, amount, description, effective_date, created_at')
++        .eq('user_id', authUser.id).order('created_at', { ascending: false }).limit(40),
+     ])
+-
+-    setWallet(walletRes.data)
+-    setContracts((contractsRes.data as Contract[]) ?? [])
+-    setUser(userRes.data)
+-    setLedger((ledgerRes.data as LedgerTx[]) ?? [])
++    setWallet(walletRes.data); setContracts((contractsRes.data as Contract[]) ?? [])
++    setUser(userRes.data); setLedger((ledgerRes.data as LedgerTx[]) ?? [])
+     setLoading(false)
+   }, [supabase])
+ 
+   useEffect(() => { load() }, [load])
+ 
+-  async function toggleAutoReinvest(contractId: string, current: boolean) {
+-    setTogglingId(contractId)
+-    const { error } = await supabase
+-      .from('wc_contracts')
+-      .update({ auto_reinvest: !current } as never)
+-      .eq('id', contractId)
+-    if (error) {
+-      showToast(error.message, false)
+-    } else {
+-      showToast(`Auto-reinvest ${!current ? 'enabled' : 'disabled'}.`, true)
+-      setContracts(prev => prev.map(c => c.id === contractId ? { ...c, auto_reinvest: !current } : c))
+-    }
++  async function toggleAutoReinvest(id: string, cur: boolean) {
++    setTogglingId(id)
++    const { error } = await supabase.from('wc_contracts').update({ auto_reinvest: !cur } as never).eq('id', id)
++    if (error) showToast(error.message, false)
++    else { showToast(`Auto-reinvest ${!cur ? 'enabled' : 'disabled'}.`, true); setContracts(p => p.map(c => c.id === id ? { ...c, auto_reinvest: !cur } : c)) }
+     setTogglingId(null)
+   }
+ 
+-  const activeContracts  = contracts.filter(c => c.state === 'ACTIVE')
+-  const historyContracts = contracts.filter(c => c.state !== 'ACTIVE' && c.state !== 'PENDING')
+-  const pendingContracts = contracts.filter(c => c.state === 'PENDING')
+-
+-  if (loading) {
+-    return (
+-      <div className="min-h-screen bg-[#0A0F1E] flex items-center justify-center">
+-        <div className="text-zinc-600 text-sm">Loading your portfolio…</div>
++  const active  = contracts.filter(c => c.state === 'ACTIVE')
++  const pending = contracts.filter(c => c.state === 'PENDING')
++  const history = contracts.filter(c => !['ACTIVE','PENDING'].includes(c.state))
++  const totalLocked = contracts.filter(c => c.state === 'ACTIVE').reduce((s, c) => s + Number(c.principal_amount), 0)
++  const totalProfit = contracts.filter(c => c.state === 'ACTIVE').reduce((s, c) => s + Number(c.profit_credited), 0)
++
++  if (loading) return (
++    <div className="min-h-screen bg-[#0A0C14] flex items-center justify-center">
++      <div className="flex flex-col items-center gap-3">
++        <div className="w-8 h-8 rounded-lg bg-[#22C55E] flex items-center justify-center animate-pulse">
++          <span className="text-black text-sm font-black">W</span>
++        </div>
++        <p className="text-[#4B5563] text-sm">Loading portfolio…</p>
+       </div>
+-    )
+-  }
++    </div>
++  )
+ 
+   return (
+-    <div className="min-h-screen bg-[#0A0F1E] text-white">
++    <div className="min-h-screen bg-[#0A0C14] text-white font-sans">
+ 
+-      {/* ── toast ── */}
++      {/* toast */}
+       {toast && (
+-        <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg border text-sm font-medium shadow-xl
+-          ${toast.ok ? 'bg-emerald-900/80 border-emerald-500/40 text-emerald-300' : 'bg-red-900/80 border-red-500/40 text-red-300'}`}>
++        <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl border text-sm font-medium shadow-2xl backdrop-blur-sm transition-all
++          ${toast.ok ? 'bg-[#052E16]/90 border-[#166534] text-[#4ADE80]' : 'bg-[#2D0A0A]/90 border-[#7F1D1D] text-[#F87171]'}`}>
+           {toast.msg}
+         </div>
+       )}
+ 
+       {/* ── nav ── */}
+-      <nav className="border-b border-[#1E2A3B] sticky top-0 z-40 bg-[#0A0F1E]/95 backdrop-blur">
++      <nav className="border-b border-[#1A1E2E] sticky top-0 z-40 bg-[#0A0C14]/95 backdrop-blur-md">
+         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+-          <div className="flex items-center gap-3">
+-            <div className="w-7 h-7 rounded bg-amber-500 flex items-center justify-center">
++          <div className="flex items-center gap-2.5">
++            <div className="w-7 h-7 rounded-lg bg-[#22C55E] flex items-center justify-center">
+               <span className="text-black text-xs font-black">W</span>
+             </div>
+-            <span className="font-semibold text-white">Wertchain</span>
++            <div>
++              <span className="font-semibold text-white text-sm">Wertchain</span>
++              <span className="text-[#4B5563] text-[10px] uppercase tracking-widest ml-2">Investment Platform</span>
++            </div>
+           </div>
+-          <div className="flex items-center gap-4">
+-            <Link href="/invest" className="text-xs text-zinc-400 hover:text-white transition-colors">Invest</Link>
+-            <Link href="/wallet" className="text-xs text-zinc-400 hover:text-white transition-colors">Wallet</Link>
+-            <div className="h-4 w-px bg-[#1E2A3B]" />
+-            <div className="flex items-center gap-2.5">
+-              <div className="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center">
+-                <span className="text-amber-400 text-[10px] font-semibold">
+-                  {(user?.full_name ?? "U").charAt(0).toUpperCase()}
+-                </span>
++          <div className="flex items-center gap-1">
++            {[['Deposit','/deposit'],['Invest','/invest'],['Wallet','/wallet']].map(([l,h]) => (
++              <Link key={l} href={h}
++                className="px-3 py-1.5 rounded-lg text-xs text-[#9CA3AF] hover:text-white hover:bg-[#1A1E2E] transition-all">
++                {l}
++              </Link>
++            ))}
++            <div className="w-px h-4 bg-[#1A1E2E] mx-1" />
++            <div className="flex items-center gap-2 px-2 py-1 rounded-lg bg-[#1A1E2E]">
++              <div className="w-5 h-5 rounded-full bg-[#22C55E]/20 flex items-center justify-center">
++                <span className="text-[#22C55E] text-[10px] font-bold">{(user?.full_name ?? 'U')[0].toUpperCase()}</span>
+               </div>
+-              <span className="text-xs text-zinc-500 hidden sm:inline">{user?.full_name}</span>
++              <span className="text-xs text-[#9CA3AF] hidden sm:block max-w-[100px] truncate">{user?.full_name}</span>
+             </div>
+-            <LogoutButton />
++            <LogoutButton className="px-3 py-1.5 rounded-lg text-xs text-[#6B7280] hover:text-[#F87171] hover:bg-[#1A1E2E] transition-all" />
+           </div>
+         </div>
+       </nav>
+ 
+-      <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+-
+-        {/* ── wallet summary ── */}
+-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+-          <div className="col-span-2 sm:col-span-2 rounded-xl border border-amber-500/30 bg-gradient-to-br from-amber-900/20 to-transparent p-5">
+-            <p className="text-xs text-amber-400/70 uppercase tracking-widest mb-1">Available Balance</p>
+-            <p className="text-3xl font-mono font-bold text-amber-400">{fmt(wallet?.available_balance ?? 0)}</p>
+-            <div className="mt-3 flex gap-2">
+-              <Link href="/wallet?action=withdraw"
+-                className="px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-black text-xs font-semibold transition-colors">
+-                Withdraw
+-              </Link>
+-              <Link href="/invest"
+-                className="px-3 py-1.5 rounded border border-amber-500/40 hover:border-amber-400 text-amber-400 text-xs font-medium transition-colors">
+-                Invest
+-              </Link>
++      <div className="max-w-5xl mx-auto px-4 py-6 space-y-5">
++
++        {/* ── hero balance strip ── */}
++        <div className="rounded-2xl border border-[#1A1E2E] bg-[#0D1017] overflow-hidden">
++          {/* green glow top */}
++          <div className="h-px bg-gradient-to-r from-transparent via-[#22C55E]/40 to-transparent" />
++          <div className="p-6">
++            <div className="flex flex-wrap items-start justify-between gap-4">
++              <div>
++                <p className="text-xs text-[#4B5563] uppercase tracking-widest mb-1">Available Balance</p>
++                <p className="text-4xl font-bold text-white tracking-tight">{fmt(wallet?.available_balance ?? 0)}</p>
++                <p className="text-xs text-[#6B7280] mt-1">{user?.email}</p>
++              </div>
++              <div className="flex flex-wrap gap-2">
++                <Link href="/deposit"
++                  className="px-4 py-2 rounded-xl bg-[#22C55E] hover:bg-[#16A34A] text-black text-sm font-semibold transition-all">
++                  Deposit
++                </Link>
++                <Link href="/invest"
++                  className="px-4 py-2 rounded-xl border border-[#22C55E]/30 hover:border-[#22C55E]/60 text-[#22C55E] text-sm font-medium transition-all">
++                  Invest
++                </Link>
++                <Link href="/wallet"
++                  className="px-4 py-2 rounded-xl border border-[#1A1E2E] hover:border-[#2A2E3E] text-[#9CA3AF] text-sm font-medium transition-all">
++                  Withdraw
++                </Link>
++              </div>
+             </div>
+-          </div>
+-          <div className="rounded-xl border border-[#1E2A3B] bg-[#111827] p-4">
+-            <p className="text-xs text-zinc-500 uppercase tracking-widest mb-1">Locked Capital</p>
+-            <p className="text-xl font-mono font-semibold text-white">{fmt(wallet?.locked_capital ?? 0)}</p>
+-          </div>
+-          <div className="rounded-xl border border-[#1E2A3B] bg-[#111827] p-4">
+-            <p className="text-xs text-zinc-500 uppercase tracking-widest mb-1">Pending Release</p>
+-            <p className="text-xl font-mono font-semibold text-white">{fmt(wallet?.pending_release_capital ?? 0)}</p>
+-          </div>
+-        </div>
+ 
+-        {/* ── active contracts ── */}
+-        {(activeContracts.length > 0 || pendingContracts.length > 0) && (
+-          <div>
+-            <h2 className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Active Investments</h2>
+-            <div className="space-y-3">
+-              {[...pendingContracts, ...activeContracts].map(c => (
+-                <div key={c.id} className={`rounded-xl border bg-gradient-to-br p-5 ${PLAN_COLORS[c.plan_tier] ?? 'from-zinc-900/40 to-zinc-800/20 border-zinc-500/30'}`}>
+-                  <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+-                    <div>
+-                      <div className="flex items-center gap-2 mb-1">
+-                        <span className="text-white font-semibold">Wertchain {PLAN_LABELS[c.plan_tier]}</span>
+-                        <span className={`text-[10px] px-2 py-0.5 rounded border font-mono ${STATE_COLORS[c.state] ?? ''}`}>
+-                          {c.state}
+-                        </span>
+-                      </div>
+-                      <p className="text-2xl font-mono font-bold text-white">{fmt(c.principal_amount)}</p>
+-                      <p className="text-xs text-zinc-500 mt-0.5">
+-                        {(c.profit_rate_snapshot * 100).toFixed(0)}% profit · matures {fmtDate(c.maturity_date)}
+-                      </p>
+-                    </div>
+-                    <div className="text-right">
+-                      <p className="text-xs text-zinc-500">Profit earned</p>
+-                      <p className="text-lg font-mono text-emerald-400">+{fmt(c.profit_credited)}</p>
+-                      <p className="text-xs text-zinc-600">of {fmt(c.expected_profit)}</p>
+-                    </div>
+-                  </div>
+-
+-                  {c.state === 'ACTIVE' && (
+-                    <>
+-                      <ProgressBar value={c.profit_credited} max={c.expected_profit} />
+-                      <div className="flex items-center justify-between mt-3">
+-                        <div className="flex gap-4 text-xs text-zinc-500">
+-                          <span>{daysLeft(c.maturity_date) !== null ? `${daysLeft(c.maturity_date)} days left` : "Awaiting activation"}</span>
+-                          <span>+{fmt(c.daily_profit_amount)}/day</span>
+-                        </div>
+-                        <button
+-                          onClick={() => toggleAutoReinvest(c.id, c.auto_reinvest)}
+-                          disabled={togglingId === c.id}
+-                          className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border transition-colors
+-                            ${c.auto_reinvest
+-                              ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20'
+-                              : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'}`}
+-                        >
+-                          <span className={`w-1.5 h-1.5 rounded-full ${c.auto_reinvest ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+-                          Auto-reinvest {c.auto_reinvest ? 'ON' : 'OFF'}
+-                        </button>
+-                      </div>
+-                    </>
+-                  )}
++            {/* balance grid */}
++            <div className="grid grid-cols-3 gap-3 mt-5 pt-5 border-t border-[#1A1E2E]">
++              {[
++                { label: 'Locked Capital', value: fmt(wallet?.locked_capital ?? 0), color: 'text-white' },
++                { label: 'Pending Release', value: fmt(wallet?.pending_release_capital ?? 0), color: 'text-white' },
++                { label: 'Accruing Profit', value: `+${fmt(wallet?.pending_profit ?? 0)}`, color: 'text-[#4ADE80]' },
++              ].map(s => (
++                <div key={s.label}>
++                  <p className="text-[11px] text-[#4B5563] uppercase tracking-wider mb-1">{s.label}</p>
++                  <p className={`text-base font-mono font-semibold ${s.color}`}>{s.value}</p>
+                 </div>
+               ))}
+             </div>
+           </div>
+-        )}
++        </div>
+ 
+-        {/* ── no contracts CTA ── */}
+-        {contracts.length === 0 && (
+-          <div className="rounded-xl border border-dashed border-[#1E2A3B] p-10 text-center">
+-            <p className="text-zinc-500 text-sm mb-3">You have no active investments yet.</p>
+-            <Link href="/invest"
+-              className="inline-flex px-4 py-2 rounded bg-amber-500 hover:bg-amber-400 text-black text-sm font-semibold transition-colors">
+-              Browse Plans
+-            </Link>
++        {/* ── portfolio stats row ── */}
++        {active.length > 0 && (
++          <div className="grid grid-cols-3 gap-3">
++            {[
++              { label: 'Active Plans', value: String(active.length), sub: 'contracts' },
++              { label: 'Capital at Work', value: fmt(totalLocked), sub: 'locked' },
++              { label: 'Profit Earned', value: `+${fmt(totalProfit)}`, sub: 'credited', green: true },
++            ].map(s => (
++              <div key={s.label} className="rounded-xl border border-[#1A1E2E] bg-[#0D1017] p-4">
++                <p className="text-[11px] text-[#4B5563] uppercase tracking-wider mb-1">{s.label}</p>
++                <p className={`text-xl font-mono font-bold ${s.green ? 'text-[#4ADE80]' : 'text-white'}`}>{s.value}</p>
++                <p className="text-[11px] text-[#374151] mt-0.5">{s.sub}</p>
++              </div>
++            ))}
+           </div>
+         )}
+ 
+-        {/* ── ledger history ── */}
+-        {ledger.length > 0 && (
+-          <div>
+-            <h2 className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Recent Activity</h2>
+-            <div className="rounded-xl border border-[#1E2A3B] bg-[#111827] divide-y divide-[#1E2A3B]">
+-              {ledger.map(tx => (
+-                <div key={tx.id} className="flex items-center gap-3 px-4 py-3">
+-                  <span className="text-sm w-5 text-center text-zinc-500">{TX_ICONS[tx.entry_type] ?? '·'}</span>
+-                  <div className="flex-1 min-w-0">
+-                    <p className="text-sm text-white truncate">{tx.description}</p>
+-                    <p className="text-xs text-zinc-600 font-mono">{tx.entry_type} · {fmtDate(tx.effective_date)}</p>
+-                  </div>
+-                  <span className="text-sm font-mono text-emerald-400 whitespace-nowrap">{fmt(tx.amount)}</span>
++        {/* ── tabs ── */}
++        <div className="flex gap-1 border-b border-[#1A1E2E]">
++          {(['portfolio','activity'] as const).map(t => (
++            <button key={t} onClick={() => setActiveTab(t)}
++              className={`px-4 py-2.5 text-sm font-medium capitalize transition-all relative
++                ${activeTab === t ? 'text-white' : 'text-[#6B7280] hover:text-[#9CA3AF]'}`}>
++              {t}
++              {activeTab === t && <span className="absolute bottom-0 left-0 right-0 h-px bg-[#22C55E]" />}
++            </button>
++          ))}
++        </div>
++
++        {/* ── portfolio tab ── */}
++        {activeTab === 'portfolio' && (
++          <div className="space-y-3">
++            {contracts.length === 0 ? (
++              <div className="rounded-2xl border border-dashed border-[#1A1E2E] p-12 text-center">
++                <div className="w-12 h-12 rounded-2xl bg-[#1A1E2E] flex items-center justify-center mx-auto mb-3">
++                  <span className="text-2xl">📈</span>
+                 </div>
+-              ))}
+-            </div>
++                <p className="text-[#9CA3AF] text-sm mb-1">No active investments yet.</p>
++                <p className="text-[#4B5563] text-xs mb-4">Start with as little as $1,000 on the Start plan.</p>
++                <Link href="/invest"
++                  className="inline-flex px-5 py-2.5 rounded-xl bg-[#22C55E] hover:bg-[#16A34A] text-black text-sm font-semibold transition-all">
++                  View Plans →
++                </Link>
++              </div>
++            ) : (
++              <>
++                {[...pending, ...active].map(c => {
++                  const pct = c.expected_profit > 0 ? Math.min(100, (c.profit_credited / c.expected_profit) * 100) : 0
++                  const dl = daysLeft(c.maturity_date)
++                  return (
++                    <div key={c.id} className="rounded-2xl border border-[#1A1E2E] bg-[#0D1017] overflow-hidden group hover:border-[#22C55E]/20 transition-all">
++                      {/* top accent line — green for active */}
++                      <div className={`h-px ${c.state === 'ACTIVE' ? 'bg-gradient-to-r from-transparent via-[#22C55E]/50 to-transparent' : 'bg-[#1A1E2E]'}`} />
++                      <div className="p-5">
++                        <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
++                          <div>
++                            <div className="flex items-center gap-2 mb-1">
++                              <span className="text-xs px-2 py-0.5 rounded-md bg-[#1A1E2E] text-[#22C55E] font-mono font-semibold">
++                                {PLAN_APY[c.plan_tier] ?? '—'} APY
++                              </span>
++                              <span className={`text-[10px] px-2 py-0.5 rounded border font-mono
++                                ${c.state === 'ACTIVE' ? 'border-[#166534] text-[#4ADE80] bg-[#052E16]' :
++                                  c.state === 'PENDING' ? 'border-[#78350F] text-[#FCD34D] bg-[#1C1400]' :
++                                  'border-[#1A1E2E] text-[#6B7280]'}`}>
++                                {c.state}
++                              </span>
++                            </div>
++                            <p className="text-white font-semibold text-lg">Wertchain {PLAN_LABELS[c.plan_tier]}</p>
++                            <p className="text-2xl font-mono font-bold text-white mt-0.5">{fmt(c.principal_amount)}</p>
++                          </div>
++                          <div className="text-right bg-[#1A1E2E]/50 rounded-xl p-3">
++                            <p className="text-[11px] text-[#4B5563] uppercase tracking-wider mb-0.5">Profit Earned</p>
++                            <p className="text-lg font-mono font-bold text-[#4ADE80]">+{fmt(c.profit_credited)}</p>
++                            <p className="text-xs text-[#374151]">of {fmt(c.expected_profit)}</p>
++                          </div>
++                        </div>
++
++                        {c.state === 'ACTIVE' && (
++                          <>
++                            {/* progress bar */}
++                            <div className="mb-3">
++                              <div className="flex justify-between text-[11px] text-[#4B5563] mb-1.5">
++                                <span>Profit progress</span>
++                                <span>{pct.toFixed(1)}%</span>
++                              </div>
++                              <div className="h-1.5 bg-[#1A1E2E] rounded-full overflow-hidden">
++                                <div className="h-full bg-gradient-to-r from-[#16A34A] to-[#4ADE80] rounded-full transition-all"
++                                  style={{ width: `${pct}%` }} />
++                              </div>
++                            </div>
++                            <div className="flex items-center justify-between">
++                              <div className="flex gap-4 text-xs text-[#6B7280]">
++                                <span>{dl !== null ? `${dl} days left` : '—'}</span>
++                                <span className="text-[#4ADE80]">+{fmt(c.daily_profit_amount)}/day</span>
++                                <span>Matures {fmtDate(c.maturity_date)}</span>
++                              </div>
++                              <button
++                                onClick={() => toggleAutoReinvest(c.id, c.auto_reinvest)}
++                                disabled={togglingId === c.id}
++                                className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg border transition-all
++                                  ${c.auto_reinvest
++                                    ? 'border-[#166534] text-[#4ADE80] bg-[#052E16]/60'
++                                    : 'border-[#1A1E2E] text-[#6B7280] hover:border-[#2A2E3E]'}`}>
++                                <span className={`w-1.5 h-1.5 rounded-full ${c.auto_reinvest ? 'bg-[#4ADE80]' : 'bg-[#374151]'}`} />
++                                Auto-reinvest {c.auto_reinvest ? 'ON' : 'OFF'}
++                              </button>
++                            </div>
++                          </>
++                        )}
++                      </div>
++                    </div>
++                  )
++                })}
++
++                {history.length > 0 && (
++                  <div>
++                    <p className="text-[11px] text-[#4B5563] uppercase tracking-widest mb-2 mt-4">Contract History</p>
++                    <div className="rounded-xl border border-[#1A1E2E] bg-[#0D1017] divide-y divide-[#1A1E2E]">
++                      {history.map(c => (
++                        <div key={c.id} className="flex items-center justify-between px-4 py-3">
++                          <div>
++                            <p className="text-sm text-[#9CA3AF]">Wertchain {PLAN_LABELS[c.plan_tier]}</p>
++                            <p className="text-xs text-[#4B5563] font-mono">{fmtDate(c.maturity_date ?? c.activated_at)}</p>
++                          </div>
++                          <div className="text-right">
++                            <p className="text-sm font-mono text-white">{fmt(c.principal_amount)}</p>
++                            <span className="text-[10px] px-2 py-0.5 rounded border border-[#1A1E2E] text-[#4B5563] font-mono">{c.state}</span>
++                          </div>
++                        </div>
++                      ))}
++                    </div>
++                  </div>
++                )}
++              </>
++            )}
+           </div>
+         )}
+ 
+-        {/* ── past contracts ── */}
+-        {historyContracts.length > 0 && (
++        {/* ── activity tab ── */}
++        {activeTab === 'activity' && (
+           <div>
+-            <h2 className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Contract History</h2>
+-            <div className="rounded-xl border border-[#1E2A3B] bg-[#111827] divide-y divide-[#1E2A3B]">
+-              {historyContracts.map(c => (
+-                <div key={c.id} className="flex items-center justify-between px-4 py-3">
+-                  <div>
+-                    <p className="text-sm text-white">Wertchain {PLAN_LABELS[c.plan_tier]}</p>
+-                    <p className="text-xs text-zinc-600">{fmtDate(c.maturity_date ?? c.activated_at)}</p>
+-                  </div>
+-                  <div className="text-right">
+-                    <p className="text-sm font-mono text-white">{fmt(c.principal_amount)}</p>
+-                    <span className={`text-[10px] px-2 py-0.5 rounded border font-mono ${STATE_COLORS[c.state] ?? ''}`}>
+-                      {c.state}
+-                    </span>
+-                  </div>
+-                </div>
+-              ))}
+-            </div>
++            {ledger.length === 0 ? (
++              <div className="text-center py-12 text-[#4B5563] text-sm">No transactions yet.</div>
++            ) : (
++              <div className="rounded-xl border border-[#1A1E2E] bg-[#0D1017] divide-y divide-[#1A1E2E]">
++                {ledger.map(tx => {
++                  const isCredit = ['DEPOSIT','PROFIT_CREDIT','CAPITAL_RELEASE','BONUS','MIGRATION_CREDIT'].includes(tx.entry_type)
++                  return (
++                    <div key={tx.id} className="flex items-center gap-3 px-4 py-3.5 hover:bg-[#1A1E2E]/30 transition-all">
++                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-xs
++                        ${isCredit ? 'bg-[#052E16] text-[#4ADE80]' : 'bg-[#1A1E2E] text-[#6B7280]'}`}>
++                        {isCredit ? '↓' : '↑'}
++                      </div>
++                      <div className="flex-1 min-w-0">
++                        <p className="text-sm text-[#E5E7EB] truncate">{tx.description}</p>
++                        <p className="text-[11px] text-[#4B5563] font-mono">{tx.entry_type} · {fmtDate(tx.effective_date)}</p>
++                      </div>
++                      <span className={`text-sm font-mono font-medium whitespace-nowrap ${isCredit ? 'text-[#4ADE80]' : 'text-[#9CA3AF]'}`}>
++                        {isCredit ? '+' : '-'}{fmt(tx.amount)}
++                      </span>
++                    </div>
++                  )
++                })}
++              </div>
++            )}
+           </div>
+         )}
+ 
+       </div>
+     </div>
+   )
+-}
+\ No newline at end of file
++}

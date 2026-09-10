@@ -160,6 +160,42 @@ export type Database = {
           },
         ]
       }
+      wc_email_log: {
+        Row: {
+          admin_user_id: string | null
+          campaign_day: number | null
+          created_at: string
+          email_type: string
+          id: string
+          recipient_email: string
+          sent_at: string
+          status: string
+          subject: string
+        }
+        Insert: {
+          admin_user_id?: string | null
+          campaign_day?: number | null
+          created_at?: string
+          email_type: string
+          id?: string
+          recipient_email: string
+          sent_at?: string
+          status?: string
+          subject: string
+        }
+        Update: {
+          admin_user_id?: string | null
+          campaign_day?: number | null
+          created_at?: string
+          email_type?: string
+          id?: string
+          recipient_email?: string
+          sent_at?: string
+          status?: string
+          subject?: string
+        }
+        Relationships: []
+      }
       wc_contracts: {
         Row: {
           activated_at: string | null

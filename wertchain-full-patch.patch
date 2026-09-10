@@ -1,0 +1,3130 @@
+diff --git a/package.json b/package.json
+index c011407..b287cd6 100644
+--- a/package.json
++++ b/package.json
+@@ -35,6 +35,7 @@
+     "react-slick": "^0.30.3",
+     "remark": "^15.0.1",
+     "remark-html": "^16.0.1",
++    "resend": "^6.19.0",
+     "shadcn": "^3.8.2",
+     "slick-carousel": "^1.8.1",
+     "tailwind-merge": "^3.4.0"
+diff --git a/src/app/admin/page.tsx b/src/app/admin/page.tsx
+index b868573..ac5bc2b 100644
+--- a/src/app/admin/page.tsx
++++ b/src/app/admin/page.tsx
+@@ -2,10 +2,21 @@
+ 
+ import Link from 'next/link'
+ import LogoutButton from '@/components/LogoutButton'
+-import { useState, useEffect, useCallback } from 'react'
++import { useState, useEffect, useCallback, useRef } from 'react'
++import { CAMPAIGN_DAYS } from '@/lib/email/campaign-templates'
+ 
+ // ── types ──────────────────────────────────────────────────────────────────
+-type Tab = 'overview' | 'deposits' | 'withdrawals' | 'migrations' | 'users'
++type Tab = 'overview' | 'deposits' | 'withdrawals' | 'migrations' | 'users' | 'email' | 'email_log'
++
++interface EmailLogEntry {
++  id: string
++  recipient_email: string
++  subject: string
++  email_type: string
++  campaign_day: number | null
++  status: string
++  sent_at: string
++}
+ 
+ interface Stats {
+   totalLockedCapital: number
+@@ -69,12 +80,12 @@ const fmtDate = (d: string) =>
+   new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+ 
+ const STATUS_COLORS: Record<string, string> = {
+-  PENDING:   'text-amber-400 bg-amber-400/10 border-amber-400/20',
+-  APPROVED:  'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
+-  REJECTED:  'text-red-400 bg-red-400/10 border-red-400/20',
+-  CANCELLED: 'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
+-  VERIFIED:  'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
+-  UNVERIFIED:'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
++  PENDING:        'text-amber-400 bg-amber-400/10 border-amber-400/20',
++  APPROVED:       'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
++  REJECTED:       'text-red-400 bg-red-400/10 border-red-400/20',
++  CANCELLED:      'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
++  VERIFIED:       'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
++  UNVERIFIED:     'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
+   PENDING_REVIEW: 'text-blue-400 bg-blue-400/10 border-blue-400/20',
+ }
+ 
+@@ -86,7 +97,6 @@ function Badge({ status }: { status: string }) {
+   )
+ }
+ 
+-// ── stat card ──────────────────────────────────────────────────────────────
+ function StatCard({ label, value, sub, accent = false }: { label: string; value: string; sub?: string; accent?: boolean }) {
+   return (
+     <div className={`rounded-lg border p-4 flex flex-col gap-1 ${accent ? 'border-amber-500/30 bg-amber-500/5' : 'border-[#1E2A3B] bg-[#111827]'}`}>
+@@ -97,24 +107,99 @@ function StatCard({ label, value, sub, accent = false }: { label: string; value:
+   )
+ }
+ 
++// ── reject modal ──────────────────────────────────────────────────────────
++function RejectModal({
++  title,
++  onConfirm,
++  onCancel,
++  loading,
++}: {
++  title: string
++  onConfirm: (reason: string) => void
++  onCancel: () => void
++  loading: boolean
++}) {
++  const [reason, setReason] = useState('')
++  const inputRef = useRef<HTMLTextAreaElement>(null)
++
++  useEffect(() => { inputRef.current?.focus() }, [])
++
++  return (
++    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
++      <div className="w-full max-w-md rounded-xl border border-[#1E2A3B] bg-[#0F1624] p-6 space-y-4 shadow-2xl">
++        <h3 className="text-white font-semibold">{title}</h3>
++        <div>
++          <label className="text-xs text-zinc-500 uppercase tracking-widest block mb-1.5">
++            Rejection Reason <span className="text-red-400">*</span>
++          </label>
++          <textarea
++            ref={inputRef}
++            value={reason}
++            onChange={e => setReason(e.target.value)}
++            rows={3}
++            className="w-full bg-[#0A0F1E] border border-[#1E2A3B] rounded-lg px-3 py-2.5 text-white text-sm font-mono resize-none focus:outline-none focus:border-red-500/60 transition-colors"
++            placeholder="State the reason clearly — this is shown to the user."
++          />
++        </div>
++        <div className="flex gap-3">
++          <button
++            onClick={onCancel}
++            disabled={loading}
++            className="flex-1 py-2.5 rounded-lg border border-[#1E2A3B] text-zinc-400 text-sm hover:text-white hover:border-zinc-600 transition-colors disabled:opacity-40"
++          >
++            Cancel
++          </button>
++          <button
++            onClick={() => { if (reason.trim()) onConfirm(reason.trim()) }}
++            disabled={loading || !reason.trim()}
++            className="flex-1 py-2.5 rounded-lg bg-red-700 hover:bg-red-600 disabled:opacity-40 text-white text-sm font-medium transition-colors"
++          >
++            {loading ? 'Rejecting…' : 'Confirm Reject'}
++          </button>
++        </div>
++      </div>
++    </div>
++  )
++}
++
+ // ── main component ─────────────────────────────────────────────────────────
+ export default function AdminPanel() {
+-  const [tab, setTab] = useState<Tab>('overview')
+-  const [stats, setStats] = useState<Stats | null>(null)
+-  const [deposits, setDeposits] = useState<Deposit[]>([])
++  const [tab, setTab]               = useState<Tab>('overview')
++  const [stats, setStats]           = useState<Stats | null>(null)
++  const [deposits, setDeposits]     = useState<Deposit[]>([])
+   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([])
+   const [migrations, setMigrations] = useState<Migration[]>([])
+-  const [users, setUsers] = useState<User[]>([])
+-  const [loading, setLoading] = useState(true)
++  const [users, setUsers]           = useState<User[]>([])
++  const [loading, setLoading]       = useState(true)
+   const [actionLoading, setActionLoading] = useState<string | null>(null)
+-  const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
++  const [toast, setToast]           = useState<{ msg: string; ok: boolean } | null>(null)
++  const [rejectModal, setRejectModal] = useState<{
++    type: 'deposit' | 'withdrawal' | 'migration'
++    id: string
++    title: string
++  } | null>(null)
++
++  // Email tab state
++  const [emailSegment, setEmailSegment]     = useState<string>('no_deposit')
++  const [emailSubject, setEmailSubject]     = useState('')
++  const [emailBody, setEmailBody]           = useState('')
++  const [emailSpecific, setEmailSpecific]   = useState('')
++  const [emailSending, setEmailSending]     = useState(false)
++  const [emailLog, setEmailLog]             = useState<EmailLogEntry[]>([])
++  const [emailLogLoading, setEmailLogLoading] = useState(false)
++  const [campaignSending, setCampaignSending] = useState<number | null>(null)
++
++  // Filter state per tab
++  const [depositFilter, setDepositFilter]         = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('PENDING')
++  const [withdrawalFilter, setWithdrawalFilter]   = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('PENDING')
++  const [migrationFilter, setMigrationFilter]     = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('PENDING')
+ 
+   const showToast = (msg: string, ok: boolean) => {
+     setToast({ msg, ok })
+     setTimeout(() => setToast(null), 3500)
+   }
+ 
+-  // ── data fetchers ──────────────────────────────────────────────────────
++  // Load once on mount only — tab switching does NOT re-fetch
+   const loadAll = useCallback(async () => {
+     setLoading(true)
+     try {
+@@ -126,16 +211,16 @@ export default function AdminPanel() {
+       setWithdrawals(data.withdrawals)
+       setMigrations(data.migrations)
+       setUsers(data.users)
+-    } catch (e: any) {
+-      showToast(e.message, false)
++    } catch (e: unknown) {
++      showToast((e as Error).message, false)
+     } finally {
+       setLoading(false)
+     }
+   }, [])
+ 
+-  useEffect(() => { loadAll() }, [loadAll, tab])
++  useEffect(() => { loadAll() }, [loadAll])
+ 
+-  // ── actions ────────────────────────────────────────────────────────────
++  // ── actions ──────────────────────────────────────────────────────────────
+   async function approveDeposit(id: string) {
+     setActionLoading(id)
+     try {
+@@ -147,7 +232,8 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Deposit approved. Ledger posted.', true)
+-      await loadAll()
++      setDeposits(prev => prev.map(d => d.id === id ? { ...d, status: 'APPROVED' } : d))
++      setStats(prev => prev ? { ...prev, pendingDeposits: Math.max(0, prev.pendingDeposits - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+@@ -155,9 +241,7 @@ export default function AdminPanel() {
+     }
+   }
+ 
+-  async function rejectDeposit(id: string) {
+-    const reason = prompt('Rejection reason (required):')
+-    if (!reason) return
++  async function rejectDeposit(id: string, reason: string) {
+     setActionLoading(id)
+     try {
+       const res = await fetch('/api/admin/deposits/approve', {
+@@ -168,11 +252,13 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Deposit rejected.', true)
+-      await loadAll()
++      setDeposits(prev => prev.map(d => d.id === id ? { ...d, status: 'REJECTED' } : d))
++      setStats(prev => prev ? { ...prev, pendingDeposits: Math.max(0, prev.pendingDeposits - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+       setActionLoading(null)
++      setRejectModal(null)
+     }
+   }
+ 
+@@ -187,7 +273,8 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Withdrawal approved.', true)
+-      await loadAll()
++      setWithdrawals(prev => prev.map(w => w.id === id ? { ...w, status: 'APPROVED' } : w))
++      setStats(prev => prev ? { ...prev, pendingWithdrawals: Math.max(0, prev.pendingWithdrawals - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+@@ -195,9 +282,7 @@ export default function AdminPanel() {
+     }
+   }
+ 
+-  async function rejectWithdrawal(id: string) {
+-    const reason = prompt('Rejection reason (required):')
+-    if (!reason) return
++  async function rejectWithdrawal(id: string, reason: string) {
+     setActionLoading(id)
+     try {
+       const res = await fetch('/api/admin/withdrawals/approve', {
+@@ -208,11 +293,13 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Withdrawal rejected. Funds returned.', true)
+-      await loadAll()
++      setWithdrawals(prev => prev.map(w => w.id === id ? { ...w, status: 'REJECTED' } : w))
++      setStats(prev => prev ? { ...prev, pendingWithdrawals: Math.max(0, prev.pendingWithdrawals - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+       setActionLoading(null)
++      setRejectModal(null)
+     }
+   }
+ 
+@@ -227,7 +314,8 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Migration approved. New contract created.', true)
+-      await loadAll()
++      setMigrations(prev => prev.map(m => m.id === id ? { ...m, status: 'APPROVED' } : m))
++      setStats(prev => prev ? { ...prev, pendingMigrations: Math.max(0, prev.pendingMigrations - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+@@ -235,9 +323,7 @@ export default function AdminPanel() {
+     }
+   }
+ 
+-  async function rejectMigration(id: string) {
+-    const reason = prompt('Rejection reason (required):')
+-    if (!reason) return
++  async function rejectMigration(id: string, reason: string) {
+     setActionLoading(id)
+     try {
+       const res = await fetch('/api/admin/migrations/approve', {
+@@ -248,26 +334,112 @@ export default function AdminPanel() {
+       const data = await res.json()
+       if (!res.ok) throw new Error(data.error)
+       showToast('Migration rejected.', true)
+-      await loadAll()
++      setMigrations(prev => prev.map(m => m.id === id ? { ...m, status: 'REJECTED' } : m))
++      setStats(prev => prev ? { ...prev, pendingMigrations: Math.max(0, prev.pendingMigrations - 1) } : prev)
+     } catch (e: unknown) {
+       showToast((e as Error).message ?? 'Failed', false)
+     } finally {
+       setActionLoading(null)
++      setRejectModal(null)
++    }
++  }
++
++  // Dispatch to correct handler when modal confirms
++  function handleModalConfirm(reason: string) {
++    if (!rejectModal) return
++    if (rejectModal.type === 'deposit')    rejectDeposit(rejectModal.id, reason)
++    if (rejectModal.type === 'withdrawal') rejectWithdrawal(rejectModal.id, reason)
++    if (rejectModal.type === 'migration')  rejectMigration(rejectModal.id, reason)
++  }
++
++  // ── email actions ─────────────────────────────────────────────────────────
++
++  async function sendCompose() {
++    if (!emailSubject.trim() || !emailBody.trim()) {
++      showToast('Subject and body are required.', false); return
++    }
++    setEmailSending(true)
++    try {
++      const res = await fetch('/api/admin/email', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          type: 'compose',
++          segment: emailSegment,
++          specific_email: emailSegment === 'specific' ? emailSpecific : undefined,
++          subject: emailSubject,
++          body: emailBody,
++        }),
++      })
++      const data = await res.json()
++      if (!res.ok) throw new Error(data.error)
++      showToast(`Sent to ${data.sent} of ${data.total} recipients.`, true)
++      setEmailSubject(''); setEmailBody(''); setEmailSpecific('')
++    } catch (e: unknown) {
++      showToast((e as Error).message, false)
++    } finally {
++      setEmailSending(false)
++    }
++  }
++
++  async function sendCampaignDay(day: number) {
++    setCampaignSending(day)
++    try {
++      const res = await fetch('/api/admin/email', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ type: 'campaign', segment: emailSegment, campaign_day: day }),
++      })
++      const data = await res.json()
++      if (!res.ok) throw new Error(data.error)
++      showToast(`Campaign Day ${day} sent to ${data.sent} recipients.`, true)
++    } catch (e: unknown) {
++      showToast((e as Error).message, false)
++    } finally {
++      setCampaignSending(null)
++    }
++  }
++
++  async function loadEmailLog() {
++    setEmailLogLoading(true)
++    try {
++      const res = await fetch('/api/admin/email')
++      const data = await res.json()
++      setEmailLog(data.logs ?? [])
++    } catch { /* silent */ } finally {
++      setEmailLogLoading(false)
+     }
+   }
+ 
+-  // ── tab content ────────────────────────────────────────────────────────
+   const TABS: { id: Tab; label: string; badge?: number }[] = [
+-    { id: 'overview',     label: 'Overview' },
+-    { id: 'deposits',     label: 'Deposits',    badge: stats?.pendingDeposits },
+-    { id: 'withdrawals',  label: 'Withdrawals', badge: stats?.pendingWithdrawals },
+-    { id: 'migrations',   label: 'Migrations',  badge: stats?.pendingMigrations },
+-    { id: 'users',        label: 'Users' },
++    { id: 'overview',    label: 'Overview' },
++    { id: 'deposits',    label: 'Deposits',    badge: stats?.pendingDeposits },
++    { id: 'withdrawals', label: 'Withdrawals', badge: stats?.pendingWithdrawals },
++    { id: 'migrations',  label: 'Migrations',  badge: stats?.pendingMigrations },
++    { id: 'users',       label: 'Users' },
++    { id: 'email',       label: 'Send Email' },
++    { id: 'email_log',   label: 'Email Log' },
+   ]
+ 
++  const STATUS_FILTERS = ['ALL', 'PENDING', 'APPROVED', 'REJECTED'] as const
++
++  const visibleDeposits    = depositFilter    === 'ALL' ? deposits    : deposits.filter(d => d.status === depositFilter)
++  const visibleWithdrawals = withdrawalFilter === 'ALL' ? withdrawals : withdrawals.filter(w => w.status === withdrawalFilter)
++  const visibleMigrations  = migrationFilter  === 'ALL' ? migrations  : migrations.filter(m => m.status === migrationFilter)
++
+   return (
+     <div className="min-h-screen bg-[#0A0F1E] text-white font-sans">
+ 
++      {/* ── reject modal ── */}
++      {rejectModal && (
++        <RejectModal
++          title={`Reject ${rejectModal.title}`}
++          onConfirm={handleModalConfirm}
++          onCancel={() => setRejectModal(null)}
++          loading={actionLoading !== null}
++        />
++      )}
++
+       {/* ── toast ── */}
+       {toast && (
+         <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg border text-sm font-medium shadow-xl transition-all
+@@ -308,7 +480,7 @@ export default function AdminPanel() {
+           {TABS.map(t => (
+             <button
+               key={t.id}
+-              onClick={() => setTab(t.id)}
++              onClick={() => { setTab(t.id); if (t.id === 'email_log') loadEmailLog() }}}
+               className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors relative
+                 ${tab === t.id
+                   ? 'text-amber-400 border-b-2 border-amber-400 -mb-px'
+@@ -332,10 +504,10 @@ export default function AdminPanel() {
+             {tab === 'overview' && stats && (
+               <div className="space-y-6">
+                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+-                  <StatCard label="Total Locked Capital"    value={fmt(stats.totalLockedCapital)}    accent />
+-                  <StatCard label="Available Balances"      value={fmt(stats.totalAvailableBalance)} />
+-                  <StatCard label="Active Contracts"        value={String(stats.activeContracts)} />
+-                  <StatCard label="Registered Users"        value={String(stats.totalUsers)} />
++                  <StatCard label="Total Locked Capital"  value={fmt(stats.totalLockedCapital)}    accent />
++                  <StatCard label="Available Balances"    value={fmt(stats.totalAvailableBalance)} />
++                  <StatCard label="Active Contracts"      value={String(stats.activeContracts)} />
++                  <StatCard label="Registered Users"      value={String(stats.totalUsers)} />
+                 </div>
+                 <div className="grid grid-cols-3 gap-3">
+                   <StatCard label="Pending Deposits"    value={String(stats.pendingDeposits)}    sub="Awaiting approval" />
+@@ -344,8 +516,8 @@ export default function AdminPanel() {
+                 </div>
+                 <div className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-4">
+                   <p className="text-xs text-zinc-600 font-mono">
+-                    All balances are derived from the master ledger. The canonical balance for any user can be reconstructed with:<br />
+-                    <span className="text-zinc-400">SELECT SUM(amount) FILTER (WHERE direction = 'CREDIT') - SUM(amount) FILTER (WHERE direction = 'DEBIT') FROM wc_ledger_entries WHERE account_type = 'USER_WALLET' AND user_id = :id</span>
++                    All balances are derived from the master ledger. Canonical balance per user:<br />
++                    <span className="text-zinc-400">SELECT SUM(amount) FILTER (WHERE direction = &apos;CREDIT&apos;) - SUM(amount) FILTER (WHERE direction = &apos;DEBIT&apos;) FROM wc_ledger_entries WHERE account_type = &apos;USER_WALLET&apos; AND user_id = :id</span>
+                   </p>
+                 </div>
+               </div>
+@@ -354,12 +526,24 @@ export default function AdminPanel() {
+             {/* ── DEPOSITS ── */}
+             {tab === 'deposits' && (
+               <div className="space-y-3">
+-                <div className="flex items-center justify-between mb-4">
+-                  <h2 className="text-sm font-semibold text-zinc-300">All Deposits</h2>
+-                  <span className="text-xs text-zinc-600 font-mono">{deposits.length} records</span>
++                <div className="flex items-center justify-between mb-2">
++                  <h2 className="text-sm font-semibold text-zinc-300">Deposits</h2>
++                  <div className="flex gap-1">
++                    {STATUS_FILTERS.map(f => (
++                      <button
++                        key={f}
++                        onClick={() => setDepositFilter(f)}
++                        className={`px-2.5 py-1 rounded text-xs font-mono transition-colors
++                          ${depositFilter === f ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
++                      >
++                        {f}
++                      </button>
++                    ))}
++                  </div>
+                 </div>
+-                {deposits.length === 0 && <p className="text-zinc-600 text-sm">No deposits yet.</p>}
+-                {deposits.map(d => (
++                <p className="text-xs text-zinc-600 font-mono mb-3">{visibleDeposits.length} records</p>
++                {visibleDeposits.length === 0 && <p className="text-zinc-600 text-sm">No deposits matching filter.</p>}
++                {visibleDeposits.map(d => (
+                   <div key={d.id} className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-4">
+                     <div className="flex flex-wrap items-start justify-between gap-3">
+                       <div className="space-y-1">
+@@ -367,7 +551,7 @@ export default function AdminPanel() {
+                           <span className="text-white font-mono font-semibold">{fmt(d.amount)}</span>
+                           <Badge status={d.status} />
+                         </div>
+-                        <p className="text-xs text-zinc-400">{d.wc_users?.full_name} · {d.wc_users?.email}</p>
++                        <p className="text-xs text-zinc-400">{d.wc_users?.full_name ?? '—'} · {d.wc_users?.email ?? '—'}</p>
+                         <p className="text-xs text-zinc-600 font-mono">{d.payment_method} · ref: {d.payment_reference ?? '—'}</p>
+                         <p className="text-xs text-zinc-700">{fmtDate(d.created_at)}</p>
+                       </div>
+@@ -381,7 +565,7 @@ export default function AdminPanel() {
+                             {actionLoading === d.id ? '…' : 'Approve'}
+                           </button>
+                           <button
+-                            onClick={() => rejectDeposit(d.id)}
++                            onClick={() => setRejectModal({ type: 'deposit', id: d.id, title: `deposit of ${fmt(d.amount)} from ${d.wc_users?.full_name ?? 'user'}` })}
+                             disabled={actionLoading === d.id}
+                             className="px-3 py-1.5 rounded bg-red-900/60 hover:bg-red-800 disabled:opacity-40 text-red-300 text-xs font-medium transition-colors"
+                           >
+@@ -398,12 +582,24 @@ export default function AdminPanel() {
+             {/* ── WITHDRAWALS ── */}
+             {tab === 'withdrawals' && (
+               <div className="space-y-3">
+-                <div className="flex items-center justify-between mb-4">
+-                  <h2 className="text-sm font-semibold text-zinc-300">All Withdrawals</h2>
+-                  <span className="text-xs text-zinc-600 font-mono">{withdrawals.length} records</span>
++                <div className="flex items-center justify-between mb-2">
++                  <h2 className="text-sm font-semibold text-zinc-300">Withdrawals</h2>
++                  <div className="flex gap-1">
++                    {STATUS_FILTERS.map(f => (
++                      <button
++                        key={f}
++                        onClick={() => setWithdrawalFilter(f)}
++                        className={`px-2.5 py-1 rounded text-xs font-mono transition-colors
++                          ${withdrawalFilter === f ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
++                      >
++                        {f}
++                      </button>
++                    ))}
++                  </div>
+                 </div>
+-                {withdrawals.length === 0 && <p className="text-zinc-600 text-sm">No withdrawals yet.</p>}
+-                {withdrawals.map(w => (
++                <p className="text-xs text-zinc-600 font-mono mb-3">{visibleWithdrawals.length} records</p>
++                {visibleWithdrawals.length === 0 && <p className="text-zinc-600 text-sm">No withdrawals matching filter.</p>}
++                {visibleWithdrawals.map(w => (
+                   <div key={w.id} className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-4">
+                     <div className="flex flex-wrap items-start justify-between gap-3">
+                       <div className="space-y-1">
+@@ -412,7 +608,7 @@ export default function AdminPanel() {
+                           <span className="text-xs text-zinc-500 font-mono">{w.withdrawal_type}</span>
+                           <Badge status={w.status} />
+                         </div>
+-                        <p className="text-xs text-zinc-400">{w.wc_users?.full_name} · {w.wc_users?.email}</p>
++                        <p className="text-xs text-zinc-400">{w.wc_users?.full_name ?? '—'} · {w.wc_users?.email ?? '—'}</p>
+                         <p className="text-xs text-zinc-600 font-mono">
+                           {Object.entries(w.destination_details ?? {}).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+                         </p>
+@@ -428,7 +624,7 @@ export default function AdminPanel() {
+                             {actionLoading === w.id ? '…' : 'Approve'}
+                           </button>
+                           <button
+-                            onClick={() => rejectWithdrawal(w.id)}
++                            onClick={() => setRejectModal({ type: 'withdrawal', id: w.id, title: `withdrawal of ${fmt(w.amount)} by ${w.wc_users?.full_name ?? 'user'}` })}
+                             disabled={actionLoading === w.id}
+                             className="px-3 py-1.5 rounded bg-red-900/60 hover:bg-red-800 disabled:opacity-40 text-red-300 text-xs font-medium transition-colors"
+                           >
+@@ -445,12 +641,24 @@ export default function AdminPanel() {
+             {/* ── MIGRATIONS ── */}
+             {tab === 'migrations' && (
+               <div className="space-y-3">
+-                <div className="flex items-center justify-between mb-4">
+-                  <h2 className="text-sm font-semibold text-zinc-300">All Migrations</h2>
+-                  <span className="text-xs text-zinc-600 font-mono">{migrations.length} records</span>
++                <div className="flex items-center justify-between mb-2">
++                  <h2 className="text-sm font-semibold text-zinc-300">Migrations</h2>
++                  <div className="flex gap-1">
++                    {STATUS_FILTERS.map(f => (
++                      <button
++                        key={f}
++                        onClick={() => setMigrationFilter(f)}
++                        className={`px-2.5 py-1 rounded text-xs font-mono transition-colors
++                          ${migrationFilter === f ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-zinc-500 hover:text-zinc-300'}`}
++                      >
++                        {f}
++                      </button>
++                    ))}
++                  </div>
+                 </div>
+-                {migrations.length === 0 && <p className="text-zinc-600 text-sm">No migrations yet.</p>}
+-                {migrations.map(m => (
++                <p className="text-xs text-zinc-600 font-mono mb-3">{visibleMigrations.length} records</p>
++                {visibleMigrations.length === 0 && <p className="text-zinc-600 text-sm">No migrations matching filter.</p>}
++                {visibleMigrations.map(m => (
+                   <div key={m.id} className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-4">
+                     <div className="flex flex-wrap items-start justify-between gap-3">
+                       <div className="space-y-1">
+@@ -462,7 +670,7 @@ export default function AdminPanel() {
+                           <span className="text-xs text-zinc-500 font-mono">{m.migration_type}</span>
+                           <Badge status={m.status} />
+                         </div>
+-                        <p className="text-xs text-zinc-400">{m.wc_users?.full_name} · {m.wc_users?.email}</p>
++                        <p className="text-xs text-zinc-400">{m.wc_users?.full_name ?? '—'} · {m.wc_users?.email ?? '—'}</p>
+                         <p className="text-xs text-zinc-600 font-mono">Target: {m.target_plan_tier}</p>
+                         <p className="text-xs text-zinc-700">{fmtDate(m.created_at)}</p>
+                       </div>
+@@ -476,7 +684,7 @@ export default function AdminPanel() {
+                             {actionLoading === m.id ? '…' : 'Approve'}
+                           </button>
+                           <button
+-                            onClick={() => rejectMigration(m.id)}
++                            onClick={() => setRejectModal({ type: 'migration', id: m.id, title: `migration of ${fmt(m.capital_amount)} by ${m.wc_users?.full_name ?? 'user'}` })}
+                             disabled={actionLoading === m.id}
+                             className="px-3 py-1.5 rounded bg-red-900/60 hover:bg-red-800 disabled:opacity-40 text-red-300 text-xs font-medium transition-colors"
+                           >
+@@ -526,9 +734,173 @@ export default function AdminPanel() {
+                 </div>
+               </div>
+             )}
++
++            {/* ── EMAIL COMPOSE ── */}
++            {tab === 'email' && (
++              <div className="space-y-6">
++
++                {/* segment selector — shared between compose and campaign */}
++                <div className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-5">
++                  <p className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Recipient Segment</p>
++                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
++                    {[
++                      { id: 'no_deposit', label: 'No deposit yet', sub: 'Registered, never invested' },
++                      { id: 'active',     label: 'Active investors', sub: 'Has ACTIVE contracts' },
++                      { id: 'all',        label: 'All users', sub: 'Every active account' },
++                      { id: 'specific',   label: 'Specific email', sub: 'Single recipient' },
++                    ].map(s => (
++                      <button
++                        key={s.id}
++                        onClick={() => setEmailSegment(s.id)}
++                        className={`p-3 rounded-lg border text-left transition-colors
++                          ${emailSegment === s.id
++                            ? 'border-amber-500/40 bg-amber-500/10'
++                            : 'border-[#1E2A3B] hover:border-zinc-600'}`}
++                      >
++                        <p className={`text-xs font-medium mb-0.5 ${emailSegment === s.id ? 'text-amber-400' : 'text-zinc-300'}`}>{s.label}</p>
++                        <p className="text-[11px] text-zinc-600">{s.sub}</p>
++                      </button>
++                    ))}
++                  </div>
++                  {emailSegment === 'specific' && (
++                    <input
++                      type="email"
++                      value={emailSpecific}
++                      onChange={e => setEmailSpecific(e.target.value)}
++                      placeholder="recipient@email.com"
++                      className="w-full bg-[#0A0F1E] border border-[#1E2A3B] rounded-lg px-3 py-2.5 text-white text-sm font-mono focus:outline-none focus:border-amber-500/60 transition-colors mt-2"
++                    />
++                  )}
++                </div>
++
++                {/* compose section */}
++                <div className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-5 space-y-4">
++                  <div className="flex items-center justify-between">
++                    <p className="text-sm font-semibold text-zinc-300">Compose Email</p>
++                    <span className="text-[11px] text-zinc-600 font-mono">Branded Wertchain template</span>
++                  </div>
++                  <div>
++                    <label className="text-xs text-zinc-500 uppercase tracking-widest block mb-1.5">Subject</label>
++                    <input
++                      type="text"
++                      value={emailSubject}
++                      onChange={e => setEmailSubject(e.target.value)}
++                      placeholder="e.g. Important update regarding your account"
++                      className="w-full bg-[#0A0F1E] border border-[#1E2A3B] rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-amber-500/60 transition-colors"
++                    />
++                  </div>
++                  <div>
++                    <label className="text-xs text-zinc-500 uppercase tracking-widest block mb-1.5">Message Body</label>
++                    <textarea
++                      value={emailBody}
++                      onChange={e => setEmailBody(e.target.value)}
++                      rows={8}
++                      placeholder={"Write your message here.\n\nLine breaks are preserved. The message will be wrapped in the Wertchain branded email template automatically.\n\nNo HTML needed."}
++                      className="w-full bg-[#0A0F1E] border border-[#1E2A3B] rounded-lg px-3 py-2.5 text-white text-sm font-mono resize-none focus:outline-none focus:border-amber-500/60 transition-colors"
++                    />
++                    <p className="text-[11px] text-zinc-600 mt-1.5">Plain text only. The branded template shell is applied automatically.</p>
++                  </div>
++                  <button
++                    onClick={sendCompose}
++                    disabled={emailSending || !emailSubject.trim() || !emailBody.trim()}
++                    className="w-full py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-black text-sm font-semibold transition-colors"
++                  >
++                    {emailSending ? 'Sending…' : `Send to segment: ${emailSegment.replace('_', ' ')}`}
++                  </button>
++                </div>
++
++                {/* campaign section */}
++                <div className="rounded-lg border border-[#1E2A3B] bg-[#111827] p-5">
++                  <div className="flex items-center justify-between mb-1">
++                    <p className="text-sm font-semibold text-zinc-300">7-Day Activation Campaign</p>
++                    <span className="text-[11px] text-zinc-600 font-mono">German-market institutional tone</span>
++                  </div>
++                  <p className="text-xs text-zinc-600 mb-4">Pre-built drip templates targeting registered users who have not yet invested. Fire each day manually or send individually.</p>
++                  <div className="space-y-2">
++                    {CAMPAIGN_DAYS.map(({ day, subject, preview }) => (
++                      <div key={day} className="flex items-start justify-between gap-4 p-3 rounded-lg border border-[#1E2A3B] bg-[#0A0F1E]">
++                        <div className="flex gap-3">
++                          <div className="w-8 h-8 rounded-lg bg-amber-500/20 flex items-center justify-center flex-shrink-0">
++                            <span className="text-amber-400 text-xs font-bold">{day}</span>
++                          </div>
++                          <div>
++                            <p className="text-xs text-zinc-300 font-medium leading-snug">{subject}</p>
++                            <p className="text-[11px] text-zinc-600 mt-0.5 italic">{preview}</p>
++                          </div>
++                        </div>
++                        <button
++                          onClick={() => sendCampaignDay(day)}
++                          disabled={campaignSending === day || emailSending}
++                          className="flex-shrink-0 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 disabled:opacity-40 text-amber-400 text-xs font-medium transition-colors border border-amber-500/20"
++                        >
++                          {campaignSending === day ? 'Sending…' : 'Send'}
++                        </button>
++                      </div>
++                    ))}
++                  </div>
++                </div>
++              </div>
++            )}
++
++            {/* ── EMAIL LOG ── */}
++            {tab === 'email_log' && (
++              <div className="space-y-3">
++                <div className="flex items-center justify-between mb-2">
++                  <h2 className="text-sm font-semibold text-zinc-300">Email Send Log</h2>
++                  <button
++                    onClick={loadEmailLog}
++                    disabled={emailLogLoading}
++                    className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
++                  >
++                    {emailLogLoading ? 'Loading…' : '↺ Refresh'}
++                  </button>
++                </div>
++                {emailLogLoading ? (
++                  <div className="text-center py-10 text-zinc-600 text-sm">Loading…</div>
++                ) : emailLog.length === 0 ? (
++                  <div className="text-center py-10 text-zinc-600 text-sm">No emails sent yet.</div>
++                ) : (
++                  <div className="overflow-x-auto">
++                    <table className="w-full text-xs">
++                      <thead>
++                        <tr className="border-b border-[#1E2A3B] text-zinc-500 text-left">
++                          <th className="pb-2 pr-4 font-medium">Recipient</th>
++                          <th className="pb-2 pr-4 font-medium">Subject</th>
++                          <th className="pb-2 pr-4 font-medium">Type</th>
++                          <th className="pb-2 pr-4 font-medium">Status</th>
++                          <th className="pb-2 font-medium">Sent</th>
++                        </tr>
++                      </thead>
++                      <tbody>
++                        {emailLog.map((e, i) => (
++                          <tr key={e.id} className={`border-b border-[#1E2A3B]/50 ${i % 2 === 0 ? '' : 'bg-white/[0.01]'}`}>
++                            <td className="py-2.5 pr-4 text-zinc-300 font-mono">{e.recipient_email}</td>
++                            <td className="py-2.5 pr-4 text-zinc-400 max-w-[200px] truncate">{e.subject}</td>
++                            <td className="py-2.5 pr-4">
++                              <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold
++                                ${e.email_type === 'campaign'
++                                  ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20'
++                                  : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
++                                {e.email_type === 'campaign' ? `Campaign D${e.campaign_day}` : 'Compose'}
++                              </span>
++                            </td>
++                            <td className="py-2.5 pr-4">
++                              <span className="text-emerald-400 text-[10px] font-mono">✓ {e.status}</span>
++                            </td>
++                            <td className="py-2.5 text-zinc-600">
++                              {new Date(e.sent_at).toLocaleDateString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}
++                            </td>
++                          </tr>
++                        ))}
++                      </tbody>
++                    </table>
++                  </div>
++                )}
++              </div>
++            )}
+           </>
+         )}
+       </div>
+     </div>
+   )
+-}
+\ No newline at end of file
++}
+diff --git a/src/app/api/admin/deposits/approve/route.ts b/src/app/api/admin/deposits/approve/route.ts
+index d009535..cc8598f 100644
+--- a/src/app/api/admin/deposits/approve/route.ts
++++ b/src/app/api/admin/deposits/approve/route.ts
+@@ -17,6 +17,7 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { createClient } from "@/lib/supabase/server";
+ import { adminClient, postLedgerTransaction } from "@/lib/ledger";
++import { sendDepositApprovedEmail, sendDepositRejectedEmail } from "@/lib/email/mailer";
+ 
+ export async function POST(req: NextRequest) {
+   const supabase = await createClient();
+@@ -110,6 +111,14 @@ export async function POST(req: NextRequest) {
+       reason: rejection_reason!,
+     });
+ 
++    adminClient.from("wc_users").select("email, full_name").eq("id", userId).single()
++      .then(({ data: u }) => {
++        if (u) sendDepositRejectedEmail(
++          { email: u.email, full_name: u.full_name },
++          { amount, currency: deposit.currency, rejection_reason: rejection_reason! }
++        )
++      }).catch(() => {})
++
+     return NextResponse.json({ message: "Deposit rejected.", deposit_id });
+   }
+ 
+@@ -182,6 +191,14 @@ export async function POST(req: NextRequest) {
+       reason: admin_notes ?? "Deposit confirmed by admin",
+     });
+ 
++    adminClient.from("wc_users").select("email, full_name").eq("id", userId).single()
++      .then(({ data: u }) => {
++        if (u) sendDepositApprovedEmail(
++          { email: u.email, full_name: u.full_name },
++          { amount, currency: deposit.currency, payment_reference: deposit.payment_reference ?? "" }
++        )
++      }).catch(() => {})
++
+     return NextResponse.json({
+       message: `Deposit approved. $${amount.toFixed(2)} credited to user available balance.`,
+       deposit_id,
+diff --git a/src/app/api/admin/email/route.ts b/src/app/api/admin/email/route.ts
+new file mode 100644
+index 0000000..6ab38e8
+--- /dev/null
++++ b/src/app/api/admin/email/route.ts
+@@ -0,0 +1,158 @@
++/**
++ * POST /api/admin/email
++ *
++ * Sends email from admin panel. Two modes:
++ *   type: "compose"  — free-form email to a segment or specific address
++ *   type: "campaign" — fires one of the 7 pre-built drip templates
++ *
++ * Body:
++ *   {
++ *     type: "compose" | "campaign",
++ *     segment: "all" | "no_deposit" | "active" | "specific",
++ *     specific_email?: string,       // when segment = "specific"
++ *     subject?: string,              // compose only
++ *     body?: string,                 // compose only (plain text / light HTML)
++ *     campaign_day?: 1|2|3|4|5|6|7, // campaign only
++ *   }
++ */
++
++import { NextRequest, NextResponse } from "next/server"
++import { createClient } from "@/lib/supabase/server"
++import { adminClient } from "@/lib/ledger"
++import { Resend } from "resend"
++import { campaignTemplate } from "@/lib/email/campaign-templates"
++import { composeTemplate } from "@/lib/email/compose-template"
++
++const resend = new Resend(process.env.RESEND_API_KEY)
++const FROM = process.env.EMAIL_FROM ?? "Wertchain <noreply@wertchain.com>"
++
++async function authAdmin() {
++  const supabase = await createClient()
++  const { data: { user } } = await supabase.auth.getUser()
++  if (!user) return null
++  const { data: a } = await adminClient.from("wc_admins").select("id, is_active").eq("user_id", user.id).single()
++  return a?.is_active ? user : null
++}
++
++async function getRecipients(segment: string, specificEmail?: string) {
++  if (segment === "specific" && specificEmail) {
++    const { data } = await adminClient.from("wc_users").select("email, full_name").eq("email", specificEmail).single()
++    return data ? [data] : []
++  }
++
++  if (segment === "all") {
++    const { data } = await adminClient.from("wc_users").select("email, full_name").eq("is_active", true)
++    return data ?? []
++  }
++
++  if (segment === "no_deposit") {
++    // Registered but never made a deposit — wallet balance == 0 and no approved deposits
++    const { data } = await adminClient
++      .from("wc_users")
++      .select("email, full_name, wc_wallet_balances(available_balance, locked_capital)")
++      .eq("is_active", true)
++    if (!data) return []
++    return data.filter((u: { wc_wallet_balances?: { available_balance: number; locked_capital: number }[] }) => {
++      const wb = Array.isArray(u.wc_wallet_balances) ? u.wc_wallet_balances[0] : u.wc_wallet_balances
++      return (!wb || (Number(wb.available_balance) === 0 && Number(wb.locked_capital) === 0))
++    })
++  }
++
++  if (segment === "active") {
++    // Users with at least one ACTIVE contract
++    const { data: contracts } = await adminClient
++      .from("wc_contracts").select("user_id").eq("state", "ACTIVE")
++    if (!contracts) return []
++    const ids = [...new Set(contracts.map((c: { user_id: string }) => c.user_id))]
++    const { data } = await adminClient.from("wc_users").select("email, full_name").in("id", ids)
++    return data ?? []
++  }
++
++  return []
++}
++
++async function logEmail(
++  adminUserId: string,
++  recipients: { email: string }[],
++  subject: string,
++  type: string,
++  campaignDay?: number
++) {
++  await adminClient.from("wc_email_log").insert(
++    recipients.map(r => ({
++      admin_user_id: adminUserId,
++      recipient_email: r.email,
++      subject,
++      email_type: type,
++      campaign_day: campaignDay ?? null,
++      sent_at: new Date().toISOString(),
++      status: "SENT",
++    }))
++  )
++}
++
++export async function POST(req: NextRequest) {
++  const admin = await authAdmin()
++  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
++
++  const body = await req.json()
++  const { type, segment, specific_email, subject, body: emailBody, campaign_day } = body
++
++  if (!segment) return NextResponse.json({ error: "segment is required" }, { status: 400 })
++
++  const recipients = await getRecipients(segment, specific_email)
++  if (recipients.length === 0) return NextResponse.json({ error: "No recipients found for this segment" }, { status: 404 })
++
++  let sent = 0
++  const errors: string[] = []
++
++  if (type === "compose") {
++    if (!subject || !emailBody) return NextResponse.json({ error: "subject and body required" }, { status: 400 })
++    for (const r of recipients) {
++      try {
++        const { error } = await resend.emails.send({
++          from: FROM, to: r.email,
++          subject,
++          html: composeTemplate({ full_name: r.full_name, subject, body: emailBody }),
++        })
++        if (error) errors.push(`${r.email}: ${error.message}`)
++        else sent++
++      } catch (e) { errors.push(`${r.email}: ${(e as Error).message}`) }
++    }
++    await logEmail(admin.id, recipients, subject, "compose")
++  }
++
++  if (type === "campaign") {
++    if (!campaign_day || campaign_day < 1 || campaign_day > 7)
++      return NextResponse.json({ error: "campaign_day must be 1–7" }, { status: 400 })
++
++    const tpl = campaignTemplate(campaign_day)
++    for (const r of recipients) {
++      try {
++        const { error } = await resend.emails.send({
++          from: FROM, to: r.email,
++          subject: tpl.subject,
++          html: tpl.html({ full_name: r.full_name }),
++        })
++        if (error) errors.push(`${r.email}: ${error.message}`)
++        else sent++
++      } catch (e) { errors.push(`${r.email}: ${(e as Error).message}`) }
++    }
++    await logEmail(admin.id, recipients, tpl.subject, "campaign", campaign_day)
++  }
++
++  return NextResponse.json({ ok: true, sent, total: recipients.length, errors: errors.length > 0 ? errors : undefined })
++}
++
++export async function GET() {
++  const admin = await authAdmin()
++  if (!admin) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
++
++  const { data } = await adminClient
++    .from("wc_email_log")
++    .select("*")
++    .order("sent_at", { ascending: false })
++    .limit(200)
++
++  return NextResponse.json({ logs: data ?? [] })
++}
+diff --git a/src/app/api/admin/migrations/approve/route.ts b/src/app/api/admin/migrations/approve/route.ts
+index 971d619..2a430a6 100644
+--- a/src/app/api/admin/migrations/approve/route.ts
++++ b/src/app/api/admin/migrations/approve/route.ts
+@@ -32,6 +32,7 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { createClient } from "@/lib/supabase/server";
+ import { adminClient, postLedgerTransaction } from "@/lib/ledger";
++import { sendMigrationApprovedEmail } from "@/lib/email/mailer";
+ 
+ export async function POST(req: NextRequest) {
+   // 1. Auth
+@@ -349,6 +350,19 @@ export async function POST(req: NextRequest) {
+       ledger_tx_id: creditTxId,
+     });
+ 
++    adminClient.from("wc_users").select("email, full_name").eq("id", userId).single()
++      .then(({ data: u }) => {
++        if (u) sendMigrationApprovedEmail(
++          { email: u.email, full_name: u.full_name },
++          {
++            from_tier: sourceContract.plan_tier,
++            to_tier: targetPlan.tier,
++            capital_amount: Number(migration.total_new_principal ?? migration.capital_amount),
++            new_apy: Number(targetPlan.profit_rate),
++          }
++        )
++      }).catch(() => {})
++
+     return NextResponse.json({
+       message: "Migration approved. New contract is ACTIVE.",
+       migration: {
+diff --git a/src/app/api/admin/stats/route.ts b/src/app/api/admin/stats/route.ts
+index f633a0a..f836a8b 100644
+--- a/src/app/api/admin/stats/route.ts
++++ b/src/app/api/admin/stats/route.ts
+@@ -3,7 +3,7 @@ import { adminClient } from "@/lib/ledger";
+ import { createClient } from "@/lib/supabase/server";
+ 
+ export async function GET() {
+-  // Verify admin
++  // Auth
+   const supabase = await createClient();
+   const { data: { user } } = await supabase.auth.getUser();
+   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+@@ -30,28 +30,41 @@ export async function GET() {
+     adminClient.from("wc_migrations").select("*", { count: "exact", head: true }).eq("status", "PENDING"),
+     adminClient.from("wc_contracts").select("*", { count: "exact", head: true }).eq("state", "ACTIVE"),
+     adminClient.from("wc_users").select("*", { count: "exact", head: true }),
+-    adminClient.from("wc_deposits").select("*").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
+-    adminClient.from("wc_withdrawals").select("*, wc_users(full_name, email)").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
+-    adminClient.from("wc_migrations").select("*, wc_users(full_name, email)").eq("status", "PENDING").order("created_at", { ascending: false }).limit(50),
+-    adminClient.from("wc_users").select("*, wc_wallet_balances(available_balance, locked_capital)").order("created_at", { ascending: false }).limit(100),
++    // Fixed: include wc_users join so full_name/email render correctly
++    adminClient.from("wc_deposits")
++      .select("*, wc_users(full_name, email)")
++      .order("created_at", { ascending: false })
++      .limit(100),
++    adminClient.from("wc_withdrawals")
++      .select("*, wc_users(full_name, email)")
++      .order("created_at", { ascending: false })
++      .limit(100),
++    adminClient.from("wc_migrations")
++      .select("*, wc_users(full_name, email)")
++      .order("created_at", { ascending: false })
++      .limit(100),
++    adminClient.from("wc_users")
++      .select("*, wc_wallet_balances(available_balance, locked_capital)")
++      .order("created_at", { ascending: false })
++      .limit(200),
+   ]);
+ 
+-  const totalLockedCapital = (wallets ?? []).reduce((s, w) => s + (w.locked_capital as number), 0);
++  const totalLockedCapital    = (wallets ?? []).reduce((s, w) => s + (w.locked_capital    as number), 0);
+   const totalAvailableBalance = (wallets ?? []).reduce((s, w) => s + (w.available_balance as number), 0);
+ 
+   return NextResponse.json({
+     stats: {
+       totalLockedCapital,
+       totalAvailableBalance,
+-      pendingDeposits: pendingDeposits ?? 0,
++      pendingDeposits:    pendingDeposits    ?? 0,
+       pendingWithdrawals: pendingWithdrawals ?? 0,
+-      pendingMigrations: pendingMigrations ?? 0,
+-      activeContracts: activeContracts ?? 0,
+-      totalUsers: totalUsers ?? 0,
++      pendingMigrations:  pendingMigrations  ?? 0,
++      activeContracts:    activeContracts    ?? 0,
++      totalUsers:         totalUsers         ?? 0,
+     },
+-    deposits: deposits ?? [],
++    deposits:    deposits    ?? [],
+     withdrawals: withdrawals ?? [],
+-    migrations: migrations ?? [],
+-    users: users ?? [],
++    migrations:  migrations  ?? [],
++    users:       users       ?? [],
+   });
+ }
+diff --git a/src/app/api/admin/withdrawals/approve/route.ts b/src/app/api/admin/withdrawals/approve/route.ts
+index d9767a3..26c284e 100644
+--- a/src/app/api/admin/withdrawals/approve/route.ts
++++ b/src/app/api/admin/withdrawals/approve/route.ts
+@@ -29,6 +29,7 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { createClient } from "@/lib/supabase/server";
+ import { adminClient, postLedgerTransaction } from "@/lib/ledger";
++import { sendWithdrawalApprovedEmail, sendWithdrawalRejectedEmail } from "@/lib/email/mailer";
+ 
+ export async function POST(req: NextRequest) {
+   // 1. Auth
+@@ -176,6 +177,14 @@ export async function POST(req: NextRequest) {
+         reason: rejection_reason!,
+       });
+ 
++      adminClient.from("wc_users").select("email, full_name").eq("id", withdrawal.user_id).single()
++        .then(({ data: u }) => {
++          if (u) sendWithdrawalRejectedEmail(
++            { email: u.email, full_name: u.full_name },
++            { amount: Number(totalStr), rejection_reason: rejection_reason! }
++          )
++        }).catch(() => {})
++
+       return NextResponse.json({
+         message: "Withdrawal rejected. Funds returned to user wallet.",
+         withdrawal_id,
+@@ -280,6 +289,14 @@ export async function POST(req: NextRequest) {
+       ledger_tx_id: transactionId,
+     });
+ 
++    adminClient.from("wc_users").select("email, full_name").eq("id", withdrawal.user_id).single()
++      .then(({ data: u }) => {
++        if (u) sendWithdrawalApprovedEmail(
++          { email: u.email, full_name: u.full_name },
++          { amount: Number(totalStr), withdrawal_type: withdrawal.withdrawal_type, tx_hash: tx_hash }
++        )
++      }).catch(() => {})
++
+     return NextResponse.json({
+       message: "Withdrawal approved.",
+       withdrawal: {
+diff --git a/src/app/api/contracts/route.ts b/src/app/api/contracts/route.ts
+index 1a95a30..0f90a0e 100644
+--- a/src/app/api/contracts/route.ts
++++ b/src/app/api/contracts/route.ts
+@@ -23,6 +23,7 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { createClient } from "@/lib/supabase/server";
+ import { adminClient, postLedgerTransaction } from "@/lib/ledger";
++import { sendContractCreatedEmail } from "@/lib/email/mailer";
+ 
+ export async function POST(req: NextRequest) {
+   // 1. Authenticate
+@@ -92,7 +93,7 @@ export async function POST(req: NextRequest) {
+   // 4. Validate user account
+   const { data: userData, error: userError } = await adminClient
+     .from("wc_users")
+-    .select("id, is_active, is_suspended, kyc_status")
++    .select("id, email, full_name, is_active, is_suspended, kyc_status")
+     .eq("id", user.id)
+     .single();
+ 
+@@ -242,6 +243,18 @@ export async function POST(req: NextRequest) {
+     console.error("Wallet balance update error (ledger already posted):", balanceUpdateError);
+   }
+ 
++  // Fire email non-blocking
++  sendContractCreatedEmail(
++    { email: userData.email, full_name: userData.full_name },
++    {
++      plan_tier: plan.tier,
++      principal: amountNum,
++      apy: Number(profitRate),
++      term_days: durationDays,
++      matures_at: maturityDate.toISOString(),
++    }
++  ).catch(() => {})
++
+   return NextResponse.json(
+     {
+       success: true,
+diff --git a/src/app/api/cron/process-release/route.ts b/src/app/api/cron/process-release/route.ts
+index 8aed6af..13f70a6 100644
+--- a/src/app/api/cron/process-release/route.ts
++++ b/src/app/api/cron/process-release/route.ts
+@@ -23,6 +23,7 @@
+ 
+ import { NextRequest, NextResponse } from "next/server";
+ import { adminClient, postLedgerTransaction } from "@/lib/ledger";
++import { sendContractMaturedEmail } from "@/lib/email/mailer";
+ 
+ const CRON_SECRET = process.env.CRON_SECRET;
+ 
+@@ -71,7 +72,7 @@ export async function GET(req: NextRequest) {
+   // Fetch RELEASE_QUEUE contracts whose delay has elapsed
+   const { data: contracts, error: contractsErr } = await adminClient
+     .from("wc_contracts")
+-    .select("id, user_id, principal_amount, release_eligible_date")
++    .select("id, user_id, principal_amount, expected_profit, plan_tier, maturity_date, release_eligible_date")
+     .eq("state", "RELEASE_QUEUE")
+     .lte("release_eligible_date", today);   // release_eligible_date <= today
+ 
+@@ -141,6 +142,22 @@ export async function GET(req: NextRequest) {
+         if (error) console.error(`Wallet cache update failed for ${contract.user_id}:`, error.message);
+       });
+ 
++      // Email — non-blocking, cron must not fail due to email issues
++      const principal = Number(contract.principal_amount)
++      const profit = Number(contract.expected_profit ?? 0)
++      adminClient.from("wc_users").select("email, full_name").eq("id", contract.user_id).single()
++        .then(({ data: u }) => {
++          if (u) sendContractMaturedEmail(
++            { email: u.email, full_name: u.full_name },
++            {
++              plan_tier: contract.plan_tier ?? "Investment",
++              principal,
++              total_return: principal + profit,
++              matures_at: contract.maturity_date ?? new Date().toISOString(),
++            }
++          )
++        }).catch(() => {})
++
+       processed++;
+     } catch (err) {
+       failed++;
+diff --git a/src/app/api/deposits/submit/route.ts b/src/app/api/deposits/submit/route.ts
+index 17089ea..3e92e59 100644
+--- a/src/app/api/deposits/submit/route.ts
++++ b/src/app/api/deposits/submit/route.ts
+@@ -15,6 +15,7 @@
+ import { NextRequest, NextResponse } from "next/server";
+ import { createClient } from "@/lib/supabase/server";
+ import { adminClient } from "@/lib/ledger";
++import { sendDepositSubmittedEmail } from "@/lib/email/mailer";
+ 
+ export async function POST(req: NextRequest) {
+   // 1. Auth
+@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
+   // 3. Fetch deposit — must belong to this user
+   const { data: deposit, error: fetchError } = await adminClient
+     .from("wc_deposits")
+-    .select("id, user_id, status, payment_reference, metadata")
++    .select("id, user_id, amount, currency, status, payment_reference, metadata")
+     .eq("id", deposit_id)
+     .single();
+ 
+@@ -122,6 +123,16 @@ export async function POST(req: NextRequest) {
+     );
+   }
+ 
++  // Fire email non-blocking — failure must not break the response
++  adminClient.from("wc_users").select("email, full_name").eq("id", deposit.user_id).single()
++    .then(({ data: u }) => {
++      if (u) sendDepositSubmittedEmail(
++        { email: u.email, full_name: u.full_name },
++        { amount: Number(deposit.amount), currency: deposit.currency, payment_reference: txHashClean, created_at: new Date().toISOString() }
++      )
++    })
++    .catch(() => {})
++
+   return NextResponse.json({
+     message: "Transaction hash submitted. Your deposit is now queued for admin review.",
+     deposit: {
+diff --git a/src/app/api/webhooks/auth/route.ts b/src/app/api/webhooks/auth/route.ts
+new file mode 100644
+index 0000000..4f5efa2
+--- /dev/null
++++ b/src/app/api/webhooks/auth/route.ts
+@@ -0,0 +1,71 @@
++/**
++ * POST /api/webhooks/auth
++ *
++ * Supabase Auth webhook receiver.
++ * Handles: USER_CREATED (send welcome email)
++ *
++ * Setup in Supabase Dashboard:
++ *   Authentication → Webhooks → Add webhook
++ *   URL: https://wertchain.com/api/webhooks/auth
++ *   Events: user.created
++ *   Secret: set SUPABASE_WEBHOOK_SECRET in env
++ *
++ * Supabase signs requests with HMAC-SHA256.
++ * We verify before doing anything.
++ */
++
++import { NextRequest, NextResponse } from "next/server"
++import { createHmac, timingSafeEqual } from "crypto"
++import { adminClient } from "@/lib/ledger"
++import { sendWelcomeEmail } from "@/lib/email/mailer"
++
++const WEBHOOK_SECRET = process.env.SUPABASE_WEBHOOK_SECRET ?? ""
++
++function verifySignature(body: string, signatureHeader: string | null): boolean {
++  if (!WEBHOOK_SECRET || !signatureHeader) return false
++  try {
++    const expected = createHmac("sha256", WEBHOOK_SECRET).update(body).digest("hex")
++    const received = signatureHeader.replace(/^sha256=/, "")
++    return timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(received, "hex"))
++  } catch {
++    return false
++  }
++}
++
++export async function POST(req: NextRequest) {
++  const raw = await req.text()
++  const sig = req.headers.get("x-supabase-signature") ?? req.headers.get("webhook-signature")
++
++  if (WEBHOOK_SECRET && !verifySignature(raw, sig)) {
++    return NextResponse.json({ error: "Invalid signature" }, { status: 401 })
++  }
++
++  let payload: { type: string; record?: { id?: string; email?: string; raw_user_meta_data?: Record<string, string> } }
++  try {
++    payload = JSON.parse(raw)
++  } catch {
++    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
++  }
++
++  if (payload.type === "INSERT" && payload.record?.email) {
++    const authUser = payload.record
++    const fullName = authUser.raw_user_meta_data?.full_name ?? authUser.email?.split("@")[0] ?? "there"
++
++    // Retry loop — the DB trigger creating wc_users row may not have fired yet
++    let wcUser: { email: string; full_name: string } | null = null
++    for (let i = 0; i < 5; i++) {
++      const { data } = await adminClient
++        .from("wc_users")
++        .select("email, full_name")
++        .eq("id", authUser.id)
++        .single()
++      if (data) { wcUser = data; break }
++      await new Promise(r => setTimeout(r, 800 * (i + 1))) // back-off: 0.8s, 1.6s, 2.4s…
++    }
++
++    const emailTarget = wcUser ?? { email: authUser.email!, full_name: fullName }
++    await sendWelcomeEmail(emailTarget).catch(console.error)
++  }
++
++  return NextResponse.json({ ok: true })
++}
+diff --git a/src/app/dashboard/page.tsx b/src/app/dashboard/page.tsx
+index 5b0f6d2..1548ae4 100644
+--- a/src/app/dashboard/page.tsx
++++ b/src/app/dashboard/page.tsx
+@@ -1,5 +1,3 @@
+-"use client"
+-
+ 'use client'
+ 
+ import { useState, useEffect, useCallback } from 'react'
+@@ -7,14 +5,12 @@ import { createClient } from '@/lib/supabase/client'
+ import Link from 'next/link'
+ import LogoutButton from '@/components/LogoutButton'
+ 
+-// ── types ──────────────────────────────────────────────────────────────────
+ interface Wallet {
+   available_balance: number
+   locked_capital: number
+   pending_release_capital: number
+   pending_profit: number
+ }
+-
+ interface Contract {
+   id: string
+   plan_tier: string
+@@ -28,7 +24,6 @@ interface Contract {
+   maturity_date: string
+   profit_rate_snapshot: number
+ }
+-
+ interface LedgerTx {
+   id: string
+   entry_type: string
+@@ -39,67 +34,23 @@ interface LedgerTx {
+ }
+ 
+ const PLAN_LABELS: Record<string, string> = {
+-  WERTCHAIN_START:        'Start',
+-  WERTCHAIN_GROWTH:       'Growth',
+-  WERTCHAIN_PROFESSIONAL: 'Professional',
+-  WERTCHAIN_ELITE:        'Elite',
++  WERTCHAIN_START: 'Start', WERTCHAIN_GROWTH: 'Growth',
++  WERTCHAIN_PROFESSIONAL: 'Professional', WERTCHAIN_ELITE: 'Elite',
+ }
+-
+-const PLAN_COLORS: Record<string, string> = {
+-  WERTCHAIN_START:        'from-blue-900/40 to-blue-800/20 border-blue-500/30',
+-  WERTCHAIN_GROWTH:       'from-emerald-900/40 to-emerald-800/20 border-emerald-500/30',
+-  WERTCHAIN_PROFESSIONAL: 'from-purple-900/40 to-purple-800/20 border-purple-500/30',
+-  WERTCHAIN_ELITE:        'from-amber-900/40 to-amber-800/20 border-amber-500/30',
+-}
+-
+-const STATE_COLORS: Record<string, string> = {
+-  ACTIVE:          'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
+-  PENDING:         'text-amber-400 bg-amber-400/10 border-amber-400/20',
+-  MATURED:         'text-blue-400 bg-blue-400/10 border-blue-400/20',
+-  RELEASE_QUEUE:   'text-orange-400 bg-orange-400/10 border-orange-400/20',
+-  RELEASED:        'text-teal-400 bg-teal-400/10 border-teal-400/20',
+-  AUTO_REINVESTED: 'text-purple-400 bg-purple-400/10 border-purple-400/20',
+-  MIGRATED:        'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
+-  WITHDRAWN:       'text-zinc-500 bg-zinc-500/10 border-zinc-500/20',
+-}
+-
+-const TX_ICONS: Record<string, string> = {
+-  DEPOSIT:             '↓',
+-  INVESTMENT_CREATION: '🔒',
+-  PROFIT_ACCRUAL:      '+',
+-  PROFIT_CREDIT:       '✦',
+-  AUTO_REINVEST:       '↺',
+-  WITHDRAWAL_REQUEST:  '↑',
+-  WITHDRAWAL_APPROVED: '✓',
+-  CAPITAL_RELEASE:     '🔓',
+-  MIGRATION_DEBIT:     '→',
+-  MIGRATION_CREDIT:    '←',
+-  BONUS:               '★',
++const PLAN_APY: Record<string, string> = {
++  WERTCHAIN_START: '5%', WERTCHAIN_GROWTH: '8%',
++  WERTCHAIN_PROFESSIONAL: '15%', WERTCHAIN_ELITE: '40%',
+ }
+ 
+ const fmt = (n: number) =>
+   new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(n)
+-
+-const fmtDate = (d: string | null | undefined) => {
+-  if (!d) return "Pending activation"
+-  return new Date(d).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+-}
+-function daysLeft(maturity: string | null | undefined) {
+-  if (!maturity) return null
+-  const diff = new Date(maturity).getTime() - Date.now()
+-  return Math.max(0, Math.ceil(diff / 86400000))
++const fmtDate = (d?: string | null) =>
++  d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
++function daysLeft(m?: string | null) {
++  if (!m) return null
++  return Math.max(0, Math.ceil((new Date(m).getTime() - Date.now()) / 86400000))
+ }
+ 
+-function ProgressBar({ value, max }: { value: number; max: number }) {
+-  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0
+-  return (
+-    <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+-      <div className="h-full bg-amber-400 rounded-full transition-all" style={{ width: `${pct}%` }} />
+-    </div>
+-  )
+-}
+-
+-// ── main component ─────────────────────────────────────────────────────────
+ export default function Dashboard() {
+   const supabase = createClient()
+   const [wallet, setWallet] = useState<Wallet | null>(null)
+@@ -109,234 +60,311 @@ export default function Dashboard() {
+   const [togglingId, setTogglingId] = useState<string | null>(null)
+   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null)
+   const [user, setUser] = useState<{ full_name: string; email: string } | null>(null)
++  const [activeTab, setActiveTab] = useState<'portfolio' | 'activity'>('portfolio')
+ 
+   const showToast = (msg: string, ok: boolean) => {
+-    setToast({ msg, ok })
+-    setTimeout(() => setToast(null), 3500)
++    setToast({ msg, ok }); setTimeout(() => setToast(null), 3500)
+   }
+ 
+   const load = useCallback(async () => {
+     const { data: { user: authUser } } = await supabase.auth.getUser()
+     if (!authUser) return
+-
+     const [walletRes, contractsRes, userRes, ledgerRes] = await Promise.all([
+       supabase.from('wc_wallet_balances').select('*').eq('user_id', authUser.id).single(),
+       supabase.from('wc_contracts').select('*').eq('user_id', authUser.id).order('created_at', { ascending: false }),
+       supabase.from('wc_users').select('full_name, email').eq('id', authUser.id).single(),
+-      supabase.from('wc_ledger_transactions').select('id, entry_type, amount, description, effective_date, created_at')
+-        .eq('user_id', authUser.id).order('created_at', { ascending: false }).limit(30),
++      supabase.from('wc_ledger_transactions')
++        .select('id, entry_type, amount, description, effective_date, created_at')
++        .eq('user_id', authUser.id).order('created_at', { ascending: false }).limit(40),
+     ])
+-
+-    setWallet(walletRes.data)
+-    setContracts((contractsRes.data as Contract[]) ?? [])
+-    setUser(userRes.data)
+-    setLedger((ledgerRes.data as LedgerTx[]) ?? [])
++    setWallet(walletRes.data); setContracts((contractsRes.data as Contract[]) ?? [])
++    setUser(userRes.data); setLedger((ledgerRes.data as LedgerTx[]) ?? [])
+     setLoading(false)
+   }, [supabase])
+ 
+   useEffect(() => { load() }, [load])
+ 
+-  async function toggleAutoReinvest(contractId: string, current: boolean) {
+-    setTogglingId(contractId)
+-    const { error } = await supabase
+-      .from('wc_contracts')
+-      .update({ auto_reinvest: !current } as never)
+-      .eq('id', contractId)
+-    if (error) {
+-      showToast(error.message, false)
+-    } else {
+-      showToast(`Auto-reinvest ${!current ? 'enabled' : 'disabled'}.`, true)
+-      setContracts(prev => prev.map(c => c.id === contractId ? { ...c, auto_reinvest: !current } : c))
+-    }
++  async function toggleAutoReinvest(id: string, cur: boolean) {
++    setTogglingId(id)
++    const { error } = await supabase.from('wc_contracts').update({ auto_reinvest: !cur } as never).eq('id', id)
++    if (error) showToast(error.message, false)
++    else { showToast(`Auto-reinvest ${!cur ? 'enabled' : 'disabled'}.`, true); setContracts(p => p.map(c => c.id === id ? { ...c, auto_reinvest: !cur } : c)) }
+     setTogglingId(null)
+   }
+ 
+-  const activeContracts  = contracts.filter(c => c.state === 'ACTIVE')
+-  const historyContracts = contracts.filter(c => c.state !== 'ACTIVE' && c.state !== 'PENDING')
+-  const pendingContracts = contracts.filter(c => c.state === 'PENDING')
+-
+-  if (loading) {
+-    return (
+-      <div className="min-h-screen bg-[#0A0F1E] flex items-center justify-center">
+-        <div className="text-zinc-600 text-sm">Loading your portfolio…</div>
++  const active  = contracts.filter(c => c.state === 'ACTIVE')
++  const pending = contracts.filter(c => c.state === 'PENDING')
++  const history = contracts.filter(c => !['ACTIVE','PENDING'].includes(c.state))
++  const totalLocked = contracts.filter(c => c.state === 'ACTIVE').reduce((s, c) => s + Number(c.principal_amount), 0)
++  const totalProfit = contracts.filter(c => c.state === 'ACTIVE').reduce((s, c) => s + Number(c.profit_credited), 0)
++
++  if (loading) return (
++    <div className="min-h-screen bg-[#0A0C14] flex items-center justify-center">
++      <div className="flex flex-col items-center gap-3">
++        <div className="w-8 h-8 rounded-lg bg-[#22C55E] flex items-center justify-center animate-pulse">
++          <span className="text-black text-sm font-black">W</span>
++        </div>
++        <p className="text-[#4B5563] text-sm">Loading portfolio…</p>
+       </div>
+-    )
+-  }
++    </div>
++  )
+ 
+   return (
+-    <div className="min-h-screen bg-[#0A0F1E] text-white">
++    <div className="min-h-screen bg-[#0A0C14] text-white font-sans">
+ 
+-      {/* ── toast ── */}
++      {/* toast */}
+       {toast && (
+-        <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-lg border text-sm font-medium shadow-xl
+-          ${toast.ok ? 'bg-emerald-900/80 border-emerald-500/40 text-emerald-300' : 'bg-red-900/80 border-red-500/40 text-red-300'}`}>
++        <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl border text-sm font-medium shadow-2xl backdrop-blur-sm transition-all
++          ${toast.ok ? 'bg-[#052E16]/90 border-[#166534] text-[#4ADE80]' : 'bg-[#2D0A0A]/90 border-[#7F1D1D] text-[#F87171]'}`}>
+           {toast.msg}
+         </div>
+       )}
+ 
+       {/* ── nav ── */}
+-      <nav className="border-b border-[#1E2A3B] sticky top-0 z-40 bg-[#0A0F1E]/95 backdrop-blur">
++      <nav className="border-b border-[#1A1E2E] sticky top-0 z-40 bg-[#0A0C14]/95 backdrop-blur-md">
+         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+-          <div className="flex items-center gap-3">
+-            <div className="w-7 h-7 rounded bg-amber-500 flex items-center justify-center">
++          <div className="flex items-center gap-2.5">
++            <div className="w-7 h-7 rounded-lg bg-[#22C55E] flex items-center justify-center">
+               <span className="text-black text-xs font-black">W</span>
+             </div>
+-            <span className="font-semibold text-white">Wertchain</span>
++            <div>
++              <span className="font-semibold text-white text-sm">Wertchain</span>
++              <span className="text-[#4B5563] text-[10px] uppercase tracking-widest ml-2">Investment Platform</span>
++            </div>
+           </div>
+-          <div className="flex items-center gap-4">
+-            <Link href="/invest" className="text-xs text-zinc-400 hover:text-white transition-colors">Invest</Link>
+-            <Link href="/wallet" className="text-xs text-zinc-400 hover:text-white transition-colors">Wallet</Link>
+-            <div className="h-4 w-px bg-[#1E2A3B]" />
+-            <div className="flex items-center gap-2.5">
+-              <div className="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center">
+-                <span className="text-amber-400 text-[10px] font-semibold">
+-                  {(user?.full_name ?? "U").charAt(0).toUpperCase()}
+-                </span>
++          <div className="flex items-center gap-1">
++            {[['Deposit','/deposit'],['Invest','/invest'],['Wallet','/wallet']].map(([l,h]) => (
++              <Link key={l} href={h}
++                className="px-3 py-1.5 rounded-lg text-xs text-[#9CA3AF] hover:text-white hover:bg-[#1A1E2E] transition-all">
++                {l}
++              </Link>
++            ))}
++            <div className="w-px h-4 bg-[#1A1E2E] mx-1" />
++            <div className="flex items-center gap-2 px-2 py-1 rounded-lg bg-[#1A1E2E]">
++              <div className="w-5 h-5 rounded-full bg-[#22C55E]/20 flex items-center justify-center">
++                <span className="text-[#22C55E] text-[10px] font-bold">{(user?.full_name ?? 'U')[0].toUpperCase()}</span>
+               </div>
+-              <span className="text-xs text-zinc-500 hidden sm:inline">{user?.full_name}</span>
++              <span className="text-xs text-[#9CA3AF] hidden sm:block max-w-[100px] truncate">{user?.full_name}</span>
+             </div>
+-            <LogoutButton />
++            <LogoutButton className="px-3 py-1.5 rounded-lg text-xs text-[#6B7280] hover:text-[#F87171] hover:bg-[#1A1E2E] transition-all" />
+           </div>
+         </div>
+       </nav>
+ 
+-      <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+-
+-        {/* ── wallet summary ── */}
+-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+-          <div className="col-span-2 sm:col-span-2 rounded-xl border border-amber-500/30 bg-gradient-to-br from-amber-900/20 to-transparent p-5">
+-            <p className="text-xs text-amber-400/70 uppercase tracking-widest mb-1">Available Balance</p>
+-            <p className="text-3xl font-mono font-bold text-amber-400">{fmt(wallet?.available_balance ?? 0)}</p>
+-            <div className="mt-3 flex gap-2">
+-              <Link href="/wallet?action=withdraw"
+-                className="px-3 py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-black text-xs font-semibold transition-colors">
+-                Withdraw
+-              </Link>
+-              <Link href="/invest"
+-                className="px-3 py-1.5 rounded border border-amber-500/40 hover:border-amber-400 text-amber-400 text-xs font-medium transition-colors">
+-                Invest
+-              </Link>
++      <div className="max-w-5xl mx-auto px-4 py-6 space-y-5">
++
++        {/* ── hero balance strip ── */}
++        <div className="rounded-2xl border border-[#1A1E2E] bg-[#0D1017] overflow-hidden">
++          {/* green glow top */}
++          <div className="h-px bg-gradient-to-r from-transparent via-[#22C55E]/40 to-transparent" />
++          <div className="p-6">
++            <div className="flex flex-wrap items-start justify-between gap-4">
++              <div>
++                <p className="text-xs text-[#4B5563] uppercase tracking-widest mb-1">Available Balance</p>
++                <p className="text-4xl font-bold text-white tracking-tight">{fmt(wallet?.available_balance ?? 0)}</p>
++                <p className="text-xs text-[#6B7280] mt-1">{user?.email}</p>
++              </div>
++              <div className="flex flex-wrap gap-2">
++                <Link href="/deposit"
++                  className="px-4 py-2 rounded-xl bg-[#22C55E] hover:bg-[#16A34A] text-black text-sm font-semibold transition-all">
++                  Deposit
++                </Link>
++                <Link href="/invest"
++                  className="px-4 py-2 rounded-xl border border-[#22C55E]/30 hover:border-[#22C55E]/60 text-[#22C55E] text-sm font-medium transition-all">
++                  Invest
++                </Link>
++                <Link href="/wallet"
++                  className="px-4 py-2 rounded-xl border border-[#1A1E2E] hover:border-[#2A2E3E] text-[#9CA3AF] text-sm font-medium transition-all">
++                  Withdraw
++                </Link>
++              </div>
+             </div>
+-          </div>
+-          <div className="rounded-xl border border-[#1E2A3B] bg-[#111827] p-4">
+-            <p className="text-xs text-zinc-500 uppercase tracking-widest mb-1">Locked Capital</p>
+-            <p className="text-xl font-mono font-semibold text-white">{fmt(wallet?.locked_capital ?? 0)}</p>
+-          </div>
+-          <div className="rounded-xl border border-[#1E2A3B] bg-[#111827] p-4">
+-            <p className="text-xs text-zinc-500 uppercase tracking-widest mb-1">Pending Release</p>
+-            <p className="text-xl font-mono font-semibold text-white">{fmt(wallet?.pending_release_capital ?? 0)}</p>
+-          </div>
+-        </div>
+ 
+-        {/* ── active contracts ── */}
+-        {(activeContracts.length > 0 || pendingContracts.length > 0) && (
+-          <div>
+-            <h2 className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Active Investments</h2>
+-            <div className="space-y-3">
+-              {[...pendingContracts, ...activeContracts].map(c => (
+-                <div key={c.id} className={`rounded-xl border bg-gradient-to-br p-5 ${PLAN_COLORS[c.plan_tier] ?? 'from-zinc-900/40 to-zinc-800/20 border-zinc-500/30'}`}>
+-                  <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+-                    <div>
+-                      <div className="flex items-center gap-2 mb-1">
+-                        <span className="text-white font-semibold">Wertchain {PLAN_LABELS[c.plan_tier]}</span>
+-                        <span className={`text-[10px] px-2 py-0.5 rounded border font-mono ${STATE_COLORS[c.state] ?? ''}`}>
+-                          {c.state}
+-                        </span>
+-                      </div>
+-                      <p className="text-2xl font-mono font-bold text-white">{fmt(c.principal_amount)}</p>
+-                      <p className="text-xs text-zinc-500 mt-0.5">
+-                        {(c.profit_rate_snapshot * 100).toFixed(0)}% profit · matures {fmtDate(c.maturity_date)}
+-                      </p>
+-                    </div>
+-                    <div className="text-right">
+-                      <p className="text-xs text-zinc-500">Profit earned</p>
+-                      <p className="text-lg font-mono text-emerald-400">+{fmt(c.profit_credited)}</p>
+-                      <p className="text-xs text-zinc-600">of {fmt(c.expected_profit)}</p>
+-                    </div>
+-                  </div>
+-
+-                  {c.state === 'ACTIVE' && (
+-                    <>
+-                      <ProgressBar value={c.profit_credited} max={c.expected_profit} />
+-                      <div className="flex items-center justify-between mt-3">
+-                        <div className="flex gap-4 text-xs text-zinc-500">
+-                          <span>{daysLeft(c.maturity_date) !== null ? `${daysLeft(c.maturity_date)} days left` : "Awaiting activation"}</span>
+-                          <span>+{fmt(c.daily_profit_amount)}/day</span>
+-                        </div>
+-                        <button
+-                          onClick={() => toggleAutoReinvest(c.id, c.auto_reinvest)}
+-                          disabled={togglingId === c.id}
+-                          className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border transition-colors
+-                            ${c.auto_reinvest
+-                              ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20'
+-                              : 'border-zinc-700 text-zinc-500 hover:border-zinc-500'}`}
+-                        >
+-                          <span className={`w-1.5 h-1.5 rounded-full ${c.auto_reinvest ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+-                          Auto-reinvest {c.auto_reinvest ? 'ON' : 'OFF'}
+-                        </button>
+-                      </div>
+-                    </>
+-                  )}
++            {/* balance grid */}
++            <div className="grid grid-cols-3 gap-3 mt-5 pt-5 border-t border-[#1A1E2E]">
++              {[
++                { label: 'Locked Capital', value: fmt(wallet?.locked_capital ?? 0), color: 'text-white' },
++                { label: 'Pending Release', value: fmt(wallet?.pending_release_capital ?? 0), color: 'text-white' },
++                { label: 'Accruing Profit', value: `+${fmt(wallet?.pending_profit ?? 0)}`, color: 'text-[#4ADE80]' },
++              ].map(s => (
++                <div key={s.label}>
++                  <p className="text-[11px] text-[#4B5563] uppercase tracking-wider mb-1">{s.label}</p>
++                  <p className={`text-base font-mono font-semibold ${s.color}`}>{s.value}</p>
+                 </div>
+               ))}
+             </div>
+           </div>
+-        )}
++        </div>
+ 
+-        {/* ── no contracts CTA ── */}
+-        {contracts.length === 0 && (
+-          <div className="rounded-xl border border-dashed border-[#1E2A3B] p-10 text-center">
+-            <p className="text-zinc-500 text-sm mb-3">You have no active investments yet.</p>
+-            <Link href="/invest"
+-              className="inline-flex px-4 py-2 rounded bg-amber-500 hover:bg-amber-400 text-black text-sm font-semibold transition-colors">
+-              Browse Plans
+-            </Link>
++        {/* ── portfolio stats row ── */}
++        {active.length > 0 && (
++          <div className="grid grid-cols-3 gap-3">
++            {[
++              { label: 'Active Plans', value: String(active.length), sub: 'contracts' },
++              { label: 'Capital at Work', value: fmt(totalLocked), sub: 'locked' },
++              { label: 'Profit Earned', value: `+${fmt(totalProfit)}`, sub: 'credited', green: true },
++            ].map(s => (
++              <div key={s.label} className="rounded-xl border border-[#1A1E2E] bg-[#0D1017] p-4">
++                <p className="text-[11px] text-[#4B5563] uppercase tracking-wider mb-1">{s.label}</p>
++                <p className={`text-xl font-mono font-bold ${s.green ? 'text-[#4ADE80]' : 'text-white'}`}>{s.value}</p>
++                <p className="text-[11px] text-[#374151] mt-0.5">{s.sub}</p>
++              </div>
++            ))}
+           </div>
+         )}
+ 
+-        {/* ── ledger history ── */}
+-        {ledger.length > 0 && (
+-          <div>
+-            <h2 className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Recent Activity</h2>
+-            <div className="rounded-xl border border-[#1E2A3B] bg-[#111827] divide-y divide-[#1E2A3B]">
+-              {ledger.map(tx => (
+-                <div key={tx.id} className="flex items-center gap-3 px-4 py-3">
+-                  <span className="text-sm w-5 text-center text-zinc-500">{TX_ICONS[tx.entry_type] ?? '·'}</span>
+-                  <div className="flex-1 min-w-0">
+-                    <p className="text-sm text-white truncate">{tx.description}</p>
+-                    <p className="text-xs text-zinc-600 font-mono">{tx.entry_type} · {fmtDate(tx.effective_date)}</p>
+-                  </div>
+-                  <span className="text-sm font-mono text-emerald-400 whitespace-nowrap">{fmt(tx.amount)}</span>
++        {/* ── tabs ── */}
++        <div className="flex gap-1 border-b border-[#1A1E2E]">
++          {(['portfolio','activity'] as const).map(t => (
++            <button key={t} onClick={() => setActiveTab(t)}
++              className={`px-4 py-2.5 text-sm font-medium capitalize transition-all relative
++                ${activeTab === t ? 'text-white' : 'text-[#6B7280] hover:text-[#9CA3AF]'}`}>
++              {t}
++              {activeTab === t && <span className="absolute bottom-0 left-0 right-0 h-px bg-[#22C55E]" />}
++            </button>
++          ))}
++        </div>
++
++        {/* ── portfolio tab ── */}
++        {activeTab === 'portfolio' && (
++          <div className="space-y-3">
++            {contracts.length === 0 ? (
++              <div className="rounded-2xl border border-dashed border-[#1A1E2E] p-12 text-center">
++                <div className="w-12 h-12 rounded-2xl bg-[#1A1E2E] flex items-center justify-center mx-auto mb-3">
++                  <span className="text-2xl">📈</span>
+                 </div>
+-              ))}
+-            </div>
++                <p className="text-[#9CA3AF] text-sm mb-1">No active investments yet.</p>
++                <p className="text-[#4B5563] text-xs mb-4">Start with as little as $1,000 on the Start plan.</p>
++                <Link href="/invest"
++                  className="inline-flex px-5 py-2.5 rounded-xl bg-[#22C55E] hover:bg-[#16A34A] text-black text-sm font-semibold transition-all">
++                  View Plans →
++                </Link>
++              </div>
++            ) : (
++              <>
++                {[...pending, ...active].map(c => {
++                  const pct = c.expected_profit > 0 ? Math.min(100, (c.profit_credited / c.expected_profit) * 100) : 0
++                  const dl = daysLeft(c.maturity_date)
++                  return (
++                    <div key={c.id} className="rounded-2xl border border-[#1A1E2E] bg-[#0D1017] overflow-hidden group hover:border-[#22C55E]/20 transition-all">
++                      {/* top accent line — green for active */}
++                      <div className={`h-px ${c.state === 'ACTIVE' ? 'bg-gradient-to-r from-transparent via-[#22C55E]/50 to-transparent' : 'bg-[#1A1E2E]'}`} />
++                      <div className="p-5">
++                        <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
++                          <div>
++                            <div className="flex items-center gap-2 mb-1">
++                              <span className="text-xs px-2 py-0.5 rounded-md bg-[#1A1E2E] text-[#22C55E] font-mono font-semibold">
++                                {PLAN_APY[c.plan_tier] ?? '—'} APY
++                              </span>
++                              <span className={`text-[10px] px-2 py-0.5 rounded border font-mono
++                                ${c.state === 'ACTIVE' ? 'border-[#166534] text-[#4ADE80] bg-[#052E16]' :
++                                  c.state === 'PENDING' ? 'border-[#78350F] text-[#FCD34D] bg-[#1C1400]' :
++                                  'border-[#1A1E2E] text-[#6B7280]'}`}>
++                                {c.state}
++                              </span>
++                            </div>
++                            <p className="text-white font-semibold text-lg">Wertchain {PLAN_LABELS[c.plan_tier]}</p>
++                            <p className="text-2xl font-mono font-bold text-white mt-0.5">{fmt(c.principal_amount)}</p>
++                          </div>
++                          <div className="text-right bg-[#1A1E2E]/50 rounded-xl p-3">
++                            <p className="text-[11px] text-[#4B5563] uppercase tracking-wider mb-0.5">Profit Earned</p>
++                            <p className="text-lg font-mono font-bold text-[#4ADE80]">+{fmt(c.profit_credited)}</p>
++                            <p className="text-xs text-[#374151]">of {fmt(c.expected_profit)}</p>
++                          </div>
++                        </div>
++
++                        {c.state === 'ACTIVE' && (
++                          <>
++                            {/* progress bar */}
++                            <div className="mb-3">
++                              <div className="flex justify-between text-[11px] text-[#4B5563] mb-1.5">
++                                <span>Profit progress</span>
++                                <span>{pct.toFixed(1)}%</span>
++                              </div>
++                              <div className="h-1.5 bg-[#1A1E2E] rounded-full overflow-hidden">
++                                <div className="h-full bg-gradient-to-r from-[#16A34A] to-[#4ADE80] rounded-full transition-all"
++                                  style={{ width: `${pct}%` }} />
++                              </div>
++                            </div>
++                            <div className="flex items-center justify-between">
++                              <div className="flex gap-4 text-xs text-[#6B7280]">
++                                <span>{dl !== null ? `${dl} days left` : '—'}</span>
++                                <span className="text-[#4ADE80]">+{fmt(c.daily_profit_amount)}/day</span>
++                                <span>Matures {fmtDate(c.maturity_date)}</span>
++                              </div>
++                              <button
++                                onClick={() => toggleAutoReinvest(c.id, c.auto_reinvest)}
++                                disabled={togglingId === c.id}
++                                className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg border transition-all
++                                  ${c.auto_reinvest
++                                    ? 'border-[#166534] text-[#4ADE80] bg-[#052E16]/60'
++                                    : 'border-[#1A1E2E] text-[#6B7280] hover:border-[#2A2E3E]'}`}>
++                                <span className={`w-1.5 h-1.5 rounded-full ${c.auto_reinvest ? 'bg-[#4ADE80]' : 'bg-[#374151]'}`} />
++                                Auto-reinvest {c.auto_reinvest ? 'ON' : 'OFF'}
++                              </button>
++                            </div>
++                          </>
++                        )}
++                      </div>
++                    </div>
++                  )
++                })}
++
++                {history.length > 0 && (
++                  <div>
++                    <p className="text-[11px] text-[#4B5563] uppercase tracking-widest mb-2 mt-4">Contract History</p>
++                    <div className="rounded-xl border border-[#1A1E2E] bg-[#0D1017] divide-y divide-[#1A1E2E]">
++                      {history.map(c => (
++                        <div key={c.id} className="flex items-center justify-between px-4 py-3">
++                          <div>
++                            <p className="text-sm text-[#9CA3AF]">Wertchain {PLAN_LABELS[c.plan_tier]}</p>
++                            <p className="text-xs text-[#4B5563] font-mono">{fmtDate(c.maturity_date ?? c.activated_at)}</p>
++                          </div>
++                          <div className="text-right">
++                            <p className="text-sm font-mono text-white">{fmt(c.principal_amount)}</p>
++                            <span className="text-[10px] px-2 py-0.5 rounded border border-[#1A1E2E] text-[#4B5563] font-mono">{c.state}</span>
++                          </div>
++                        </div>
++                      ))}
++                    </div>
++                  </div>
++                )}
++              </>
++            )}
+           </div>
+         )}
+ 
+-        {/* ── past contracts ── */}
+-        {historyContracts.length > 0 && (
++        {/* ── activity tab ── */}
++        {activeTab === 'activity' && (
+           <div>
+-            <h2 className="text-xs text-zinc-500 uppercase tracking-widest mb-3">Contract History</h2>
+-            <div className="rounded-xl border border-[#1E2A3B] bg-[#111827] divide-y divide-[#1E2A3B]">
+-              {historyContracts.map(c => (
+-                <div key={c.id} className="flex items-center justify-between px-4 py-3">
+-                  <div>
+-                    <p className="text-sm text-white">Wertchain {PLAN_LABELS[c.plan_tier]}</p>
+-                    <p className="text-xs text-zinc-600">{fmtDate(c.maturity_date ?? c.activated_at)}</p>
+-                  </div>
+-                  <div className="text-right">
+-                    <p className="text-sm font-mono text-white">{fmt(c.principal_amount)}</p>
+-                    <span className={`text-[10px] px-2 py-0.5 rounded border font-mono ${STATE_COLORS[c.state] ?? ''}`}>
+-                      {c.state}
+-                    </span>
+-                  </div>
+-                </div>
+-              ))}
+-            </div>
++            {ledger.length === 0 ? (
++              <div className="text-center py-12 text-[#4B5563] text-sm">No transactions yet.</div>
++            ) : (
++              <div className="rounded-xl border border-[#1A1E2E] bg-[#0D1017] divide-y divide-[#1A1E2E]">
++                {ledger.map(tx => {
++                  const isCredit = ['DEPOSIT','PROFIT_CREDIT','CAPITAL_RELEASE','BONUS','MIGRATION_CREDIT'].includes(tx.entry_type)
++                  return (
++                    <div key={tx.id} className="flex items-center gap-3 px-4 py-3.5 hover:bg-[#1A1E2E]/30 transition-all">
++                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-xs
++                        ${isCredit ? 'bg-[#052E16] text-[#4ADE80]' : 'bg-[#1A1E2E] text-[#6B7280]'}`}>
++                        {isCredit ? '↓' : '↑'}
++                      </div>
++                      <div className="flex-1 min-w-0">
++                        <p className="text-sm text-[#E5E7EB] truncate">{tx.description}</p>
++                        <p className="text-[11px] text-[#4B5563] font-mono">{tx.entry_type} · {fmtDate(tx.effective_date)}</p>
++                      </div>
++                      <span className={`text-sm font-mono font-medium whitespace-nowrap ${isCredit ? 'text-[#4ADE80]' : 'text-[#9CA3AF]'}`}>
++                        {isCredit ? '+' : '-'}{fmt(tx.amount)}
++                      </span>
++                    </div>
++                  )
++                })}
++              </div>
++            )}
+           </div>
+         )}
+ 
+       </div>
+     </div>
+   )
+-}
+\ No newline at end of file
++}
+diff --git a/src/app/deposit/page.tsx b/src/app/deposit/page.tsx
+index fc10207..3e9441d 100644
+--- a/src/app/deposit/page.tsx
++++ b/src/app/deposit/page.tsx
+@@ -1,8 +1,9 @@
+ 'use client'
+ 
+-import { useState, Suspense } from 'react'
+-import { useSearchParams } from 'next/navigation'
++import { useState, useEffect, Suspense } from 'react'
++import { useSearchParams, useRouter } from 'next/navigation'
+ import Link from 'next/link'
++import { createClient } from '@/lib/supabase/client'
+ 
+ const CURRENCIES = [
+   { code: 'USDT_TRC20', label: 'USDT (TRC20)' },
+@@ -17,6 +18,14 @@ type Step = 'choose' | 'pay' | 'done'
+ 
+ function DepositContent() {
+   const params = useSearchParams()
++  const router = useRouter()
++  const supabase = createClient()
++
++  useEffect(() => {
++    supabase.auth.getUser().then(({ data: { user } }) => {
++      if (!user) router.replace('/signin?redirectTo=/deposit')
++    })
++  }, [supabase, router])
+ 
+   const planId = params.get('plan_id') ?? ''
+   const planLabel = params.get('plan_label') ?? ''
+diff --git a/src/lib/email/campaign-templates.ts b/src/lib/email/campaign-templates.ts
+new file mode 100644
+index 0000000..dca1a14
+--- /dev/null
++++ b/src/lib/email/campaign-templates.ts
+@@ -0,0 +1,326 @@
++/**
++ * Wertchain 7-Day Activation Campaign
++ * Target: Registered users who have not yet made a first deposit
++ *
++ * Tone calibration (German-market institutional):
++ *   - No urgency manipulation. No countdown timers. No "act now".
++ *   - Precise numbers. Exact mechanics. No vague promises.
++ *   - Every claim is factually grounded in the platform's architecture.
++ *   - Formal but not stiff. Authoritative but accessible.
++ *   - Risk disclosure present on every email.
++ */
++
++const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://wertchain.live'
++
++function shell(subject: string, preview: string, headerTitle: string, headerSub: string | undefined, content: string) {
++  return `<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1.0" />
++  <meta name="color-scheme" content="dark" /><title>${subject}</title>
++</head>
++<body style="margin:0;padding:0;background-color:#080D1A;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;color:#E5E7EB;">
++  <div style="display:none;max-height:0;overflow:hidden;">${preview}&nbsp;​‌​‌​‌</div>
++  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#080D1A;min-height:100vh;">
++    <tr><td align="center" style="padding:40px 16px;">
++      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
++
++        <tr><td style="padding-bottom:28px;" align="center">
++          <table cellpadding="0" cellspacing="0"><tr>
++            <td style="background-color:#22C55E;width:32px;height:32px;border-radius:8px;text-align:center;vertical-align:middle;">
++              <span style="font-size:16px;font-weight:900;color:#000;line-height:32px;">W</span>
++            </td>
++            <td style="padding-left:10px;">
++              <span style="font-size:18px;font-weight:700;color:#FFF;letter-spacing:-0.3px;">Wertchain</span>
++              <span style="font-size:10px;color:#4B5563;letter-spacing:1.5px;text-transform:uppercase;margin-left:8px;">INVESTMENT PLATFORM</span>
++            </td>
++          </tr></table>
++        </td></tr>
++
++        <tr><td style="background-color:#0D1017;border:1px solid #1A1E2E;border-radius:16px;overflow:hidden;">
++          <div style="height:2px;background:linear-gradient(to right,transparent,#22C55E40,transparent);"></div>
++
++          <!-- header -->
++          <table width="100%" cellpadding="0" cellspacing="0">
++            <tr><td style="padding:36px 40px 28px;border-bottom:1px solid #1A1E2E;">
++              <p style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:#4B5563;text-transform:uppercase;margin:0 0 8px;">Wertchain Notification</p>
++              <h1 style="font-size:22px;font-weight:700;color:#FFF;line-height:1.3;letter-spacing:-0.4px;margin:0;">${headerTitle}</h1>
++              ${headerSub ? `<p style="font-size:14px;color:#9CA3AF;margin:6px 0 0;">${headerSub}</p>` : ''}
++            </td></tr>
++
++            <!-- body -->
++            <tr><td style="padding:28px 40px;">
++              ${content}
++
++              <!-- risk disclosure -->
++              <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px;">
++                <tr><td style="background-color:#0A1628;border:1px solid #1E3A5F;border-radius:8px;padding:14px 16px;">
++                  <p style="font-size:11px;color:#60A5FA;line-height:1.6;margin:0;">
++                    ℹ&nbsp;&nbsp;Capital allocation involves risk. Fixed yield rates are locked at contract creation and do not fluctuate thereafter. Past yield performance does not guarantee future results. Please invest only capital you can commit for the full contract term.
++                  </p>
++                </td></tr>
++              </table>
++            </td></tr>
++          </table>
++        </td></tr>
++
++        <tr><td style="padding:24px 0 0;" align="center">
++          <table cellpadding="0" cellspacing="0"><tr>
++            <td style="padding:0 12px;"><a href="${SITE_URL}/dashboard" style="font-size:12px;color:#4B5563;text-decoration:none;">Dashboard</a></td>
++            <td style="padding:0 12px;"><a href="${SITE_URL}/privacy" style="font-size:12px;color:#4B5563;text-decoration:none;">Privacy</a></td>
++            <td style="padding:0 12px;"><a href="${SITE_URL}/terms" style="font-size:12px;color:#4B5563;text-decoration:none;">Terms</a></td>
++            <td style="padding:0 12px;"><a href="${SITE_URL}/contact" style="font-size:12px;color:#4B5563;text-decoration:none;">Support</a></td>
++          </tr></table>
++          <p style="font-size:11px;color:#374151;line-height:1.6;margin:8px auto 0;max-width:400px;">
++            Wertchain Ltd · You are receiving this because you hold a registered account.<br/>
++            This is an automated message — please do not reply directly.
++          </p>
++        </td></tr>
++
++      </table>
++    </td></tr>
++  </table>
++</body>
++</html>`
++}
++
++function para(t: string) {
++  return `<p style="font-size:14px;color:#9CA3AF;line-height:1.8;margin:0 0 16px;">${t}</p>`
++}
++function cta(label: string, href: string) {
++  return `<table cellpadding="0" cellspacing="0" style="margin:24px 0;">
++    <tr><td style="background-color:#22C55E;border-radius:10px;">
++      <a href="${href}" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:700;color:#000;text-decoration:none;">${label}</a>
++    </td></tr>
++  </table>`
++}
++function statGrid(items: [string, string, string?][]) {
++  return `<table width="100%" cellpadding="0" cellspacing="0" style="margin:20px 0;">
++    <tr>${items.map(([label, value, sub]) => `
++      <td align="center" style="background-color:#0A1628;border:1px solid #1A1E2E;border-radius:10px;padding:16px;width:${Math.floor(100/items.length)}%;">
++        <p style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#4B5563;margin:0 0 4px;">${label}</p>
++        <p style="font-size:20px;font-weight:800;color:#22C55E;font-family:'Courier New',monospace;margin:0;">${value}</p>
++        ${sub ? `<p style="font-size:11px;color:#374151;margin:2px 0 0;">${sub}</p>` : ''}
++      </td>`).join('<td width="8"></td>')}
++    </tr>
++  </table>`
++}
++function dataBlock(rows: [string, string][]) {
++  return `<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0A1628;border:1px solid #1A1E2E;border-radius:10px;margin:20px 0;">
++    <tr><td style="padding:4px 20px;">
++      <table width="100%" cellpadding="0" cellspacing="0">
++        ${rows.map(([l,v]) => `
++          <tr><td style="padding:12px 0;border-bottom:1px solid #1A1E2E;">
++            <p style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#4B5563;margin:0 0 2px;">${l}</p>
++            <p style="font-size:13px;font-weight:500;color:#D1D5DB;font-family:'Courier New',monospace;margin:0;">${v}</p>
++          </td></tr>`).join('')}
++      </table>
++    </td></tr>
++  </table>`
++}
++
++// ── DAY TEMPLATES ──────────────────────────────────────────────────────────
++
++const days: Record<number, {
++  subject: string
++  preview: string
++  title: string
++  subtitle?: string
++  body: (name: string) => string
++}> = {
++
++  // DAY 1 — Welcome back. Here is what you have access to.
++  1: {
++    subject: 'Your Wertchain account is waiting — here is what you have access to',
++    preview: 'Fixed-yield investment contracts, cryptographically tracked, fully auditable.',
++    title: 'Your account is ready. Your capital is not working yet.',
++    subtitle: 'A brief overview of what Wertchain offers.',
++    body: (name) => `
++      ${para(`Dear ${name},`)}
++      ${para('You created a Wertchain account but have not yet placed a capital allocation. This message is a straightforward reminder of what the platform provides.')}
++      ${statGrid([
++        ['Fixed Yield', '5–40%', 'per contract term'],
++        ['Ledger Type', 'NUMERIC(20,8)', 'double-entry'],
++        ['Auditability', '100%', 'reconstructable'],
++      ])}
++      ${para('Wertchain operates on a Master Ledger architecture. Every allocation, every profit accrual, and every withdrawal is recorded as an immutable double-entry transaction — SHA-256 hashed and fully reconstructable from first principles.')}
++      ${para('There are four capital tiers. Each carries a fixed yield rate locked at contract activation. The rate does not change for the duration of your term.')}
++      ${cta('View investment plans', `${SITE_URL}/invest`)}
++      ${para('If you have questions about the mechanics before committing capital, our support team is available at <a href="mailto:support@wertchain.live" style="color:#22C55E;">support@wertchain.live</a>.')}
++    `,
++  },
++
++  // DAY 2 — Exactly how it works. Step by step.
++  2: {
++    subject: 'How Wertchain contracts work — step by step',
++    preview: 'Four steps from deposit to daily yield accrual. No ambiguity.',
++    title: 'Four steps from deposit to daily yield.',
++    subtitle: 'How capital flows through the platform.',
++    body: (name) => `
++      ${para(`Dear ${name},`)}
++      ${para('Precision matters in investment infrastructure. Here is exactly what happens when you allocate capital on Wertchain — no approximations.')}
++      ${dataBlock([
++        ['Step 1 — Deposit', 'Transfer crypto to the platform wallet. Submit your transaction hash for confirmation. Typical review time: 1–6 hours.'],
++        ['Step 2 — Activation', 'Once verified, your fixed-term contract is activated. Your yield rate is locked at this point and cannot be changed.'],
++        ['Step 3 — Daily Accrual', 'Profit accrues daily at your contracted rate. Each accrual is recorded as a separate ledger entry with timestamp and SHA-256 hash.'],
++        ['Step 4 — Maturity', 'At contract maturity, capital enters the release queue. Profit is credited to your available balance immediately.'],
++      ])}
++      ${para('At no stage does the platform have discretionary control over your profit rate. The rate is encoded in the contract record at activation and is mathematically fixed.')}
++      ${cta('Open an investment contract', `${SITE_URL}/deposit`)}
++    `,
++  },
++
++  // DAY 3 — The architecture. Why it cannot be soft-coded.
++  3: {
++    subject: 'Why Wertchain balances are cryptographically guaranteed',
++    preview: 'NUMERIC(20,8) precision. SHA-256 hash chains. Double-entry constraints. Every cent tracked.',
++    title: 'The infrastructure behind your balance.',
++    subtitle: 'Built on PostgreSQL 15 + Supabase with database-level financial constraints.',
++    body: (name) => `
++      ${para(`Dear ${name},`)}
++      ${para('This message is for investors who want to understand the infrastructure before committing capital. If you prefer a summary, skip to the bottom.')}
++      ${dataBlock([
++        ['Arithmetic precision', 'NUMERIC(20,8) — 8 decimal places, no floating point rounding error on any transaction'],
++        ['Ledger type', 'Double-entry — every credit has a matching debit; no balance can appear without a recorded source'],
++        ['Hash chain', 'SHA-256 per ledger entry — any tampering with a historical record is mathematically detectable'],
++        ['State machine', 'Contract states (PENDING → ACTIVE → MATURED → RELEASE_QUEUE → RELEASED) are enforced at database level — not in application code'],
++        ['Audit trail', '100% reconstructable — the sum of all ledger entries for any account equals the balance displayed, always'],
++      ])}
++      ${para('This is the architecture the platform is built on. It is not marketing language — it is the schema. Investors with a technical background are welcome to request a technical overview from support.')}
++      ${para('<strong style="color:#FFF;">Summary:</strong> Your balance cannot be altered without a corresponding ledger record. Every movement is tracked, hashed, and auditable.')}
++      ${cta('Start with a capital allocation', `${SITE_URL}/invest`)}
++    `,
++  },
++
++  // DAY 4 — The four plans. Exact terms.
++  4: {
++    subject: 'Wertchain investment tiers — exact terms and yield rates',
++    preview: 'Start at $1K. Four fixed-yield tiers. Rates locked at activation.',
++    title: 'Four capital tiers. Exact terms.',
++    subtitle: 'No negotiated rates. No variable yields. What you see is what is locked.',
++    body: (name) => `
++      ${para(`Dear ${name},`)}
++      ${para('The following is a precise specification of the four Wertchain investment tiers currently available.')}
++      <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0A1628;border:1px solid #1A1E2E;border-radius:10px;margin:20px 0;overflow:hidden;">
++        <tr style="border-bottom:1px solid #1A1E2E;">
++          <td style="padding:10px 16px;"><p style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#4B5563;margin:0;">Plan</p></td>
++          <td style="padding:10px 16px;"><p style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#4B5563;margin:0;">Capital Range</p></td>
++          <td style="padding:10px 16px;"><p style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#4B5563;margin:0;">Yield</p></td>
++          <td style="padding:10px 16px;"><p style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#4B5563;margin:0;">Term</p></td>
++        </tr>
++        ${[
++          ['Start Plan', '$1,000 – $4,999', '5%', '14 days'],
++          ['Growth Plan', '$5,000 – $14,999', '8%', '30 days'],
++          ['Professional', '$15,000 – $49,999', '15%', '60 days'],
++          ['Elite', '$50,000+', '40%', '90 days'],
++        ].map(([plan, range, yield_, term]) => `
++          <tr style="border-top:1px solid #1A1E2E;">
++            <td style="padding:13px 16px;"><p style="font-size:13px;font-weight:600;color:#FFF;margin:0;">${plan}</p></td>
++            <td style="padding:13px 16px;"><p style="font-size:13px;color:#9CA3AF;font-family:'Courier New',monospace;margin:0;">${range}</p></td>
++            <td style="padding:13px 16px;"><p style="font-size:13px;font-weight:700;color:#22C55E;font-family:'Courier New',monospace;margin:0;">${yield_}</p></td>
++            <td style="padding:13px 16px;"><p style="font-size:13px;color:#9CA3AF;font-family:'Courier New',monospace;margin:0;">${term}</p></td>
++          </tr>`).join('')}
++      </table>
++      ${para('Yield rates are fixed at contract creation. They do not fluctuate based on market conditions, platform performance, or any external variable.')}
++      ${para('Plan upgrades (migrations) are available mid-term if your capital grows beyond the current tier threshold. Migrations are reviewed by the admin team within 24 hours.')}
++      ${cta('Allocate capital now', `${SITE_URL}/deposit`)}
++    `,
++  },
++
++  // DAY 5 — Withdrawals. Exactly how they work.
++  5: {
++    subject: 'How withdrawals work on Wertchain — no surprises',
++    preview: 'Profit at maturity. Capital in the release queue. KYC required. Processed within 24 hours.',
++    title: 'Withdrawals — the exact mechanics.',
++    subtitle: 'Transparency on how and when funds are returned.',
++    body: (name) => `
++      ${para(`Dear ${name},`)}
++      ${para('Before allocating capital, investors deserve to understand precisely how withdrawal works. This is that explanation.')}
++      ${dataBlock([
++        ['Profit withdrawal', 'Profit is credited to your available balance at contract maturity. You may withdraw at any time after crediting. No waiting period on profit.'],
++        ['Capital withdrawal', 'Principal enters a release queue at maturity. Release is processed within the contractual release window (typically 24–72 hours).'],
++        ['Partial withdrawal', 'Not available during the contract term. Capital is locked for the full duration as stated in your contract.'],
++        ['KYC requirement', 'Identity verification is required before the first withdrawal is processed. This is a regulatory requirement, not a platform restriction.'],
++        ['Processing time', 'Admin team processes withdrawal requests within 24 business hours. Crypto network confirmation time applies separately.'],
++      ])}
++      ${para('There are no hidden fees on withdrawals. The amount credited to your balance is the amount sent to your wallet, minus standard network gas fees where applicable.')}
++      ${para('Locking capital for a fixed term is the structure that allows fixed yield rates to be contractually guaranteed. This is the direct exchange: certainty of return, in exchange for commitment of term.')}
++      ${cta('Review plans and start investing', `${SITE_URL}/invest`)}
++    `,
++  },
++
++  // DAY 6 — Objections handled. Direct.
++  6: {
++    subject: 'The questions investors ask before their first deposit',
++    preview: 'Is my capital safe? What if I need funds early? How are yields generated?',
++    title: 'Answers to the questions investors ask before committing.',
++    body: (name) => `
++      ${para(`Dear ${name},`)}
++      ${para('The following are the most common questions from investors before their first allocation. Straight answers.')}
++      ${dataBlock([
++        ['Is my capital safe?', 'Capital is held in platform-controlled wallets separate from operational funds. The ledger architecture ensures balances are always auditable and reconstructable. No fractional reserve. Every deposit is traceable.'],
++        ['How are yields generated?', 'The platform generates returns through structured capital deployment strategies. Yield rates are fixed at contract creation — your rate is locked regardless of what the platform earns.'],
++        ['What if I need funds before maturity?', 'Capital is committed for the contract term. Early termination is not supported. This is a fundamental structural requirement, not a restriction — it is what makes the fixed rate possible.'],
++        ['What is the minimum allocation?', '$1,000 USD on the Start Plan. The 14-day term and 5% yield make it the appropriate entry point for new investors.'],
++        ['Is KYC mandatory?', 'KYC is required for withdrawals. Account registration and deposits do not require KYC. Verification is initiated when you first request a withdrawal.'],
++        ['What happens if I have a dispute?', 'All transactions are immutably recorded in the ledger. Any discrepancy can be investigated by submitting a support ticket with your account email. Every entry has a timestamp, hash, and audit trail.'],
++      ])}
++      ${cta('Open your investment contract', `${SITE_URL}/deposit`)}
++    `,
++  },
++
++  // DAY 7 — Final message. No pressure. Just clear.
++  7: {
++    subject: 'A final note from the Wertchain team',
++    preview: 'Your account remains open. The plans remain available. No deadline.',
++    title: 'Your account is open. No deadline.',
++    subtitle: 'This is the last message in this introduction series.',
++    body: (name) => `
++      ${para(`Dear ${name},`)}
++      ${para('This is the last message in the introduction series sent to new Wertchain registrants. You will not receive further automated outreach after today unless you have an active contract or initiate contact.')}
++      ${para('If you have not yet allocated capital, that is a considered decision and we respect it. The platform remains available when and if it is appropriate for your portfolio.')}
++      <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0A1628;border:1px solid #1A1E2E;border-radius:10px;margin:20px 0;">
++        <tr><td style="padding:20px 24px;">
++          <p style="font-size:13px;font-weight:700;color:#FFF;margin:0 0 8px;">What remains available to you:</p>
++          ${[
++            'Your account — active and accessible at any time',
++            'All four investment plans — same rates, same terms',
++            'Support team — available at support@wertchain.live',
++            'Full platform documentation — at wertchain.live',
++          ].map(item => `
++            <p style="font-size:13px;color:#9CA3AF;margin:6px 0;padding-left:16px;border-left:2px solid #22C55E40;">
++              <span style="color:#22C55E;margin-right:8px;">✓</span>${item}
++            </p>`).join('')}
++        </td></tr>
++      </table>
++      ${para('If anything in the platform architecture, the yield mechanics, or the withdrawal process was unclear from these messages, please write to us directly. We will answer precisely.')}
++      ${para('Thank you for registering.')}
++      <p style="font-size:13px;color:#9CA3AF;margin:20px 0 0;"><strong style="color:#FFF;">The Wertchain Team</strong></p>
++      ${cta('Log in to your account', `${SITE_URL}/dashboard`)}
++    `,
++  },
++}
++
++export function campaignTemplate(day: number): {
++  subject: string
++  html: (opts: { full_name: string }) => string
++} {
++  const d = days[day]
++  if (!d) throw new Error(`No campaign template for day ${day}`)
++  return {
++    subject: d.subject,
++    html: ({ full_name }) => shell(
++      d.subject,
++      d.preview,
++      d.title,
++      d.subtitle,
++      d.body(full_name)
++    ),
++  }
++}
++
++export const CAMPAIGN_DAYS = Object.entries(days).map(([day, d]) => ({
++  day: Number(day),
++  subject: d.subject,
++  preview: d.preview,
++}))
+diff --git a/src/lib/email/compose-template.ts b/src/lib/email/compose-template.ts
+new file mode 100644
+index 0000000..6de7efa
+--- /dev/null
++++ b/src/lib/email/compose-template.ts
+@@ -0,0 +1,77 @@
++const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://wertchain.com'
++
++export function composeTemplate({ full_name, subject, body }: {
++  full_name: string
++  subject: string
++  body: string
++}) {
++  // Convert plain line-breaks to <br> tags, and wrap in branded shell
++  const htmlBody = body
++    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
++    .replace(/\n/g, '<br />')
++
++  return `<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <meta name="color-scheme" content="dark" /><title>${subject}</title>
++</head>
++<body style="margin:0;padding:0;background-color:#080D1A;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;color:#E5E7EB;">
++  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#080D1A;min-height:100vh;">
++    <tr><td align="center" style="padding:40px 16px;">
++      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
++
++        <!-- logo -->
++        <tr><td style="padding-bottom:28px;" align="center">
++          <table cellpadding="0" cellspacing="0">
++            <tr>
++              <td style="background-color:#22C55E;width:32px;height:32px;border-radius:8px;text-align:center;vertical-align:middle;">
++                <span style="font-size:16px;font-weight:900;color:#000;line-height:32px;">W</span>
++              </td>
++              <td style="padding-left:10px;">
++                <span style="font-size:18px;font-weight:700;color:#FFFFFF;letter-spacing:-0.3px;">Wertchain</span>
++                <span style="font-size:10px;color:#4B5563;letter-spacing:1.5px;text-transform:uppercase;margin-left:8px;">INVESTMENT PLATFORM</span>
++              </td>
++            </tr>
++          </table>
++        </td></tr>
++
++        <!-- card -->
++        <tr><td style="background-color:#0D1017;border:1px solid #1A1E2E;border-radius:16px;overflow:hidden;">
++          <div style="height:2px;background:linear-gradient(to right,transparent,#22C55E40,transparent);"></div>
++          <table width="100%" cellpadding="0" cellspacing="0">
++            <tr><td style="padding:36px 40px 28px;border-bottom:1px solid #1A1E2E;">
++              <p style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:#4B5563;text-transform:uppercase;margin:0 0 8px;">Wertchain · Account Message</p>
++              <h1 style="font-size:22px;font-weight:700;color:#FFFFFF;line-height:1.3;letter-spacing:-0.4px;margin:0;">${subject}</h1>
++            </td></tr>
++            <tr><td style="padding:28px 40px;">
++              <p style="font-size:15px;color:#E5E7EB;margin:0 0 20px;">Dear <strong>${full_name}</strong>,</p>
++              <div style="font-size:14px;color:#9CA3AF;line-height:1.8;">${htmlBody}</div>
++              <table cellpadding="0" cellspacing="0" style="margin-top:28px;">
++                <tr>
++                  <td style="background-color:#22C55E;border-radius:10px;">
++                    <a href="${SITE_URL}/dashboard" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:700;color:#000;text-decoration:none;">Open Dashboard →</a>
++                  </td>
++                </tr>
++              </table>
++              <p style="font-size:12px;color:#374151;margin-top:24px;line-height:1.6;">
++                This message was sent by the Wertchain team. Do not reply to this email.<br />
++                Questions? <a href="${SITE_URL}/contact" style="color:#22C55E;">Contact support</a>
++              </p>
++            </td></tr>
++          </table>
++        </td></tr>
++
++        <!-- footer -->
++        <tr><td style="padding:24px 0 0;" align="center">
++          <p style="font-size:11px;color:#374151;line-height:1.6;margin:0;">
++            Wertchain Ltd · <a href="${SITE_URL}/privacy" style="color:#4B5563;">Privacy</a> · <a href="${SITE_URL}/terms" style="color:#4B5563;">Terms</a>
++          </p>
++        </td></tr>
++
++      </table>
++    </td></tr>
++  </table>
++</body>
++</html>`
++}
+diff --git a/src/lib/email/mailer.ts b/src/lib/email/mailer.ts
+new file mode 100644
+index 0000000..6bd1d93
+--- /dev/null
++++ b/src/lib/email/mailer.ts
+@@ -0,0 +1,101 @@
++import { Resend } from 'resend'
++import {
++  welcomeTemplate,
++  depositSubmittedTemplate,
++  depositApprovedTemplate,
++  depositRejectedTemplate,
++  withdrawalRequestedTemplate,
++  withdrawalApprovedTemplate,
++  withdrawalRejectedTemplate,
++  contractCreatedTemplate,
++  contractMaturedTemplate,
++  profitCreditedTemplate,
++  migrationApprovedTemplate,
++  securityAlertTemplate,
++} from './templates'
++
++const resend = new Resend(process.env.RESEND_API_KEY)
++const FROM = process.env.EMAIL_FROM ?? 'Wertchain <noreply@wertchain.com>'
++
++async function send(to: string, subject: string, html: string) {
++  try {
++    const { data, error } = await resend.emails.send({ from: FROM, to, subject, html })
++    if (error) console.error('[mailer] resend error:', error)
++    return { ok: !error, id: data?.id }
++  } catch (err) {
++    console.error('[mailer] send failed:', err)
++    return { ok: false }
++  }
++}
++
++// ── email dispatch functions ──────────────────────────────────────────────
++
++export async function sendWelcomeEmail(user: { email: string; full_name: string }) {
++  return send(user.email, 'Welcome to Wertchain', welcomeTemplate(user))
++}
++
++export async function sendDepositSubmittedEmail(user: { email: string; full_name: string }, deposit: {
++  amount: number; currency: string; payment_reference: string; created_at: string
++}) {
++  return send(user.email, 'Deposit received — under review', depositSubmittedTemplate(user, deposit))
++}
++
++export async function sendDepositApprovedEmail(user: { email: string; full_name: string }, deposit: {
++  amount: number; currency: string; payment_reference: string
++}) {
++  return send(user.email, `$${deposit.amount.toFixed(2)} credited to your account`, depositApprovedTemplate(user, deposit))
++}
++
++export async function sendDepositRejectedEmail(user: { email: string; full_name: string }, deposit: {
++  amount: number; currency: string; rejection_reason: string
++}) {
++  return send(user.email, 'Deposit could not be verified', depositRejectedTemplate(user, deposit))
++}
++
++export async function sendWithdrawalRequestedEmail(user: { email: string; full_name: string }, withdrawal: {
++  amount: number; withdrawal_type: string; created_at: string
++}) {
++  return send(user.email, 'Withdrawal request received', withdrawalRequestedTemplate(user, withdrawal))
++}
++
++export async function sendWithdrawalApprovedEmail(user: { email: string; full_name: string }, withdrawal: {
++  amount: number; withdrawal_type: string; tx_hash?: string
++}) {
++  return send(user.email, `$${withdrawal.amount.toFixed(2)} withdrawal approved`, withdrawalApprovedTemplate(user, withdrawal))
++}
++
++export async function sendWithdrawalRejectedEmail(user: { email: string; full_name: string }, withdrawal: {
++  amount: number; rejection_reason: string
++}) {
++  return send(user.email, 'Withdrawal request declined', withdrawalRejectedTemplate(user, withdrawal))
++}
++
++export async function sendContractCreatedEmail(user: { email: string; full_name: string }, contract: {
++  plan_tier: string; principal: number; apy: number; term_days: number; matures_at: string
++}) {
++  return send(user.email, `${contract.plan_tier} investment activated`, contractCreatedTemplate(user, contract))
++}
++
++export async function sendContractMaturedEmail(user: { email: string; full_name: string }, contract: {
++  plan_tier: string; principal: number; total_return: number; matures_at: string
++}) {
++  return send(user.email, 'Your investment has matured', contractMaturedTemplate(user, contract))
++}
++
++export async function sendProfitCreditedEmail(user: { email: string; full_name: string }, credit: {
++  amount: number; source_plan: string; period_label: string
++}) {
++  return send(user.email, `Profit credited — ${credit.source_plan}`, profitCreditedTemplate(user, credit))
++}
++
++export async function sendMigrationApprovedEmail(user: { email: string; full_name: string }, migration: {
++  from_tier: string; to_tier: string; capital_amount: number; new_apy: number
++}) {
++  return send(user.email, `Plan upgraded to ${migration.to_tier}`, migrationApprovedTemplate(user, migration))
++}
++
++export async function sendSecurityAlertEmail(user: { email: string; full_name: string }, alert: {
++  event: string; ip?: string; location?: string; timestamp: string
++}) {
++  return send(user.email, '⚠ New sign-in to your Wertchain account', securityAlertTemplate(user, alert))
++}
+diff --git a/src/lib/email/migration.sql b/src/lib/email/migration.sql
+new file mode 100644
+index 0000000..1e17a91
+--- /dev/null
++++ b/src/lib/email/migration.sql
+@@ -0,0 +1,32 @@
++-- Run this in Supabase SQL editor
++-- Creates the email log table for admin email tracking
++
++CREATE TABLE IF NOT EXISTS wc_email_log (
++  id                UUID DEFAULT gen_random_uuid() PRIMARY KEY,
++  admin_user_id     UUID REFERENCES auth.users(id) ON DELETE SET NULL,
++  recipient_email   TEXT NOT NULL,
++  subject           TEXT NOT NULL,
++  email_type        TEXT NOT NULL CHECK (email_type IN ('compose', 'campaign')),
++  campaign_day      INTEGER CHECK (campaign_day BETWEEN 1 AND 7),
++  status            TEXT NOT NULL DEFAULT 'SENT',
++  sent_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON wc_email_log(sent_at DESC);
++CREATE INDEX IF NOT EXISTS idx_email_log_recipient ON wc_email_log(recipient_email);
++CREATE INDEX IF NOT EXISTS idx_email_log_type ON wc_email_log(email_type);
++
++-- RLS: only admins can read, service role can insert
++ALTER TABLE wc_email_log ENABLE ROW LEVEL SECURITY;
++
++CREATE POLICY "Admins can view email log"
++  ON wc_email_log FOR SELECT
++  USING (
++    EXISTS (
++      SELECT 1 FROM wc_admins
++      WHERE user_id = auth.uid() AND is_active = true
++    )
++  );
++
++-- Service role bypasses RLS for inserts from API routes (adminClient)
+diff --git a/src/lib/email/templates.ts b/src/lib/email/templates.ts
+new file mode 100644
+index 0000000..d9c1631
+--- /dev/null
++++ b/src/lib/email/templates.ts
+@@ -0,0 +1,608 @@
++// ─────────────────────────────────────────────────────────────────────────────
++// Wertchain Email Templates
++//
++// Design language:
++//   Background:  #0A0F1E  (deep navy — matches app shell)
++//   Card:        #111827  (surface)
++//   Border:      #1E2A3B  (subtle)
++//   Gold accent: #E8B84B  (brand primary)
++//   Text/1:      #FFFFFF
++//   Text/2:      #9CA3AF  (zinc-400)
++//   Text/3:      #4B5563  (zinc-600)
++//   Green:       #10B981
++//   Red:         #EF4444
++//   Font stack:  -apple-system, 'Segoe UI', sans-serif  (safe + clean)
++//
++// Each template is a standalone function returning an HTML string.
++// All emails are ~600px wide, dark-mode first, with a plain-text fallback
++// ensured by keeping copy readable even without images.
++// ─────────────────────────────────────────────────────────────────────────────
++
++const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://wertchain.com'
++const LOGO_URL = `${SITE_URL}/images/logo/logo.svg`
++
++// ── shared utilities ──────────────────────────────────────────────────────
++
++function fmt(n: number) {
++  return new Intl.NumberFormat('en-US', {
++    style: 'currency',
++    currency: 'USD',
++    minimumFractionDigits: 2,
++  }).format(n)
++}
++
++function fmtDate(iso: string) {
++  return new Date(iso).toLocaleDateString('en-GB', {
++    day: '2-digit', month: 'long', year: 'numeric',
++  })
++}
++
++// ── base layout ───────────────────────────────────────────────────────────
++
++function base(content: string, previewText: string = '') {
++  return `<!DOCTYPE html>
++<html lang="en">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <meta name="color-scheme" content="dark" />
++  <!--[if mso]><noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript><![endif]-->
++  <title>Wertchain</title>
++  <style>
++    * { box-sizing: border-box; margin: 0; padding: 0; }
++    body { background-color: #080D1A; font-family: -apple-system,'Segoe UI',Helvetica,Arial,sans-serif; color: #E5E7EB; }
++    a { color: #E8B84B; text-decoration: none; }
++    @media (prefers-color-scheme: light) {
++      body { background-color: #F3F4F6; }
++      .card { background-color: #FFFFFF !important; border-color: #E5E7EB !important; }
++      .card-inner { background-color: #F9FAFB !important; border-color: #E5E7EB !important; }
++      .txt-primary { color: #111827 !important; }
++      .txt-muted { color: #374151 !important; }
++      .txt-dim { color: #6B7280 !important; }
++      .footer-bg { background-color: #F3F4F6 !important; }
++      .footer-txt { color: #6B7280 !important; }
++    }
++  </style>
++</head>
++<body>
++  ${previewText ? `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">${previewText}&nbsp;‌&zwnj;​‌&zwnj;​‌&zwnj;​‌&zwnj;​</div>` : ''}
++
++  <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background-color:#080D1A;min-height:100vh;">
++    <tr>
++      <td align="center" style="padding:40px 16px;">
++
++        <!-- wrapper -->
++        <table width="600" cellpadding="0" cellspacing="0" role="presentation" style="max-width:600px;width:100%;">
++
++          <!-- header -->
++          <tr>
++            <td style="padding-bottom:32px;" align="center">
++              <table cellpadding="0" cellspacing="0" role="presentation">
++                <tr>
++                  <td style="background-color:#E8B84B;width:32px;height:32px;border-radius:6px;text-align:center;vertical-align:middle;">
++                    <span style="font-size:16px;font-weight:900;color:#0A0F1E;line-height:32px;">W</span>
++                  </td>
++                  <td style="padding-left:10px;">
++                    <span style="font-size:18px;font-weight:700;color:#FFFFFF;letter-spacing:-0.3px;">Wertchain</span>
++                  </td>
++                </tr>
++              </table>
++            </td>
++          </tr>
++
++          <!-- card -->
++          <tr>
++            <td class="card" style="background-color:#111827;border:1px solid #1E2A3B;border-radius:16px;overflow:hidden;">
++              ${content}
++            </td>
++          </tr>
++
++          <!-- footer -->
++          <tr>
++            <td class="footer-bg" style="padding:32px 0 0;">
++              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
++                <tr>
++                  <td align="center" style="padding-bottom:16px;">
++                    <table cellpadding="0" cellspacing="0" role="presentation">
++                      <tr>
++                        <td style="padding:0 12px;">
++                          <a href="${SITE_URL}/dashboard" class="footer-txt" style="font-size:12px;color:#4B5563;">Dashboard</a>
++                        </td>
++                        <td style="padding:0 12px;">
++                          <a href="${SITE_URL}/privacy" class="footer-txt" style="font-size:12px;color:#4B5563;">Privacy</a>
++                        </td>
++                        <td style="padding:0 12px;">
++                          <a href="${SITE_URL}/terms" class="footer-txt" style="font-size:12px;color:#4B5563;">Terms</a>
++                        </td>
++                        <td style="padding:0 12px;">
++                          <a href="${SITE_URL}/contact" class="footer-txt" style="font-size:12px;color:#4B5563;">Support</a>
++                        </td>
++                      </tr>
++                    </table>
++                  </td>
++                </tr>
++                <tr>
++                  <td align="center">
++                    <p class="footer-txt" style="font-size:11px;color:#374151;line-height:1.6;max-width:400px;margin:0 auto;">
++                      Wertchain Ltd · You're receiving this because you hold an account with us.<br />
++                      This is an automated notification — please do not reply to this email.
++                    </p>
++                  </td>
++                </tr>
++              </table>
++            </td>
++          </tr>
++
++        </table>
++      </td>
++    </tr>
++  </table>
++</body>
++</html>`
++}
++
++// ── shared card components ────────────────────────────────────────────────
++
++function cardHeader(title: string, subtitle?: string) {
++  return `
++    <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
++      <tr>
++        <td style="padding:36px 40px 28px;border-bottom:1px solid #1E2A3B;">
++          <p class="txt-dim" style="font-size:11px;font-weight:600;letter-spacing:1.5px;color:#4B5563;text-transform:uppercase;margin-bottom:8px;">Wertchain Notification</p>
++          <h1 class="txt-primary" style="font-size:22px;font-weight:700;color:#FFFFFF;line-height:1.3;letter-spacing:-0.4px;">${title}</h1>
++          ${subtitle ? `<p class="txt-muted" style="font-size:14px;color:#9CA3AF;margin-top:6px;line-height:1.5;">${subtitle}</p>` : ''}
++        </td>
++      </tr>
++    </table>`
++}
++
++function cardBody(html: string) {
++  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation"><tr><td style="padding:28px 40px;">${html}</td></tr></table>`
++}
++
++function greeting(name: string) {
++  return `<p class="txt-primary" style="font-size:15px;color:#E5E7EB;margin-bottom:20px;">Hello <strong>${name}</strong>,</p>`
++}
++
++function para(text: string) {
++  return `<p class="txt-muted" style="font-size:14px;color:#9CA3AF;line-height:1.7;margin-bottom:16px;">${text}</p>`
++}
++
++function dataRow(label: string, value: string, highlight = false) {
++  return `
++    <tr>
++      <td style="padding:12px 0;border-bottom:1px solid #1A2234;">
++        <p class="txt-dim" style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#4B5563;margin-bottom:2px;">${label}</p>
++        <p class="${highlight ? '' : 'txt-muted'}" style="font-size:14px;font-weight:${highlight ? '700' : '500'};color:${highlight ? '#E8B84B' : '#D1D5DB'};font-family:'Courier New',monospace;">${value}</p>
++      </td>
++    </tr>`
++}
++
++function dataTable(rows: [string, string, boolean?][]) {
++  return `
++    <table width="100%" cellpadding="0" cellspacing="0" role="presentation" class="card-inner" style="background-color:#0D1626;border:1px solid #1A2234;border-radius:10px;margin:20px 0;">
++      <tr><td style="padding:4px 20px;">
++        <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
++          ${rows.map(([l, v, h]) => dataRow(l, v, h)).join('')}
++        </table>
++      </td></tr>
++    </table>`
++}
++
++function cta(label: string, href: string) {
++  return `
++    <table cellpadding="0" cellspacing="0" role="presentation" style="margin-top:24px;">
++      <tr>
++        <td style="background-color:#E8B84B;border-radius:8px;">
++          <a href="${href}" style="display:inline-block;padding:14px 28px;font-size:14px;font-weight:700;color:#0A0F1E;letter-spacing:0.2px;text-decoration:none;">${label}</a>
++        </td>
++      </tr>
++    </table>`
++}
++
++function statusBadge(label: string, color: 'green' | 'red' | 'amber' | 'blue') {
++  const colors = {
++    green: { bg: '#052E16', border: '#166534', text: '#4ADE80' },
++    red:   { bg: '#2D0A0A', border: '#7F1D1D', text: '#F87171' },
++    amber: { bg: '#2D1F00', border: '#78350F', text: '#FCD34D' },
++    blue:  { bg: '#0A1628', border: '#1E3A5F', text: '#60A5FA' },
++  }
++  const c = colors[color]
++  return `<span style="display:inline-block;background-color:${c.bg};border:1px solid ${c.border};color:${c.text};font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:4px 10px;border-radius:4px;">${label}</span>`
++}
++
++function divider() {
++  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation"><tr><td style="padding:8px 0;"><div style="height:1px;background-color:#1E2A3B;"></div></td></tr></table>`
++}
++
++function amountHero(amount: number, label?: string) {
++  return `
++    <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:20px 0;">
++      <tr>
++        <td class="card-inner" align="center" style="background-color:#0D1626;border:1px solid #1A2234;border-radius:10px;padding:24px;">
++          ${label ? `<p class="txt-dim" style="font-size:11px;letter-spacing:1.2px;text-transform:uppercase;color:#4B5563;margin-bottom:6px;">${label}</p>` : ''}
++          <p style="font-size:36px;font-weight:800;color:#E8B84B;letter-spacing:-1px;font-family:'Courier New',monospace;">${fmt(amount)}</p>
++        </td>
++      </tr>
++    </table>`
++}
++
++function notice(text: string, type: 'info' | 'warning' | 'success' = 'info') {
++  const styles = {
++    info:    { bg: '#0A1628', border: '#1E3A5F', text: '#93C5FD', icon: 'ℹ' },
++    warning: { bg: '#1C1400', border: '#78350F', text: '#FCD34D', icon: '⚠' },
++    success: { bg: '#022C22', border: '#065F46', text: '#6EE7B7', icon: '✓' },
++  }
++  const s = styles[type]
++  return `
++    <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:16px 0;">
++      <tr>
++        <td style="background-color:${s.bg};border:1px solid ${s.border};border-radius:8px;padding:14px 16px;">
++          <p style="font-size:13px;color:${s.text};line-height:1.6;">${s.icon}&nbsp;&nbsp;${text}</p>
++        </td>
++      </tr>
++    </table>`
++}
++
++// ─────────────────────────────────────────────────────────────────────────────
++// TEMPLATE EXPORTS
++// ─────────────────────────────────────────────────────────────────────────────
++
++// ── 1. Welcome ────────────────────────────────────────────────────────────
++
++export function welcomeTemplate(user: { full_name: string }) {
++  return base(`
++    ${cardHeader('Welcome to Wertchain', 'Your account is active.')}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para('Your account has been created and is ready. Wertchain gives you access to structured investment plans backed by transparent on-chain mechanics — no opaque fees, no hidden lock-in beyond what you select.')}
++
++      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:24px 0;">
++        ${[
++          ['Step 1', 'Deposit funds to your wallet', '→ /deposit'],
++          ['Step 2', 'Select an investment plan', '→ /invest'],
++          ['Step 3', 'Track returns on your dashboard', '→ /dashboard'],
++        ].map(([step, desc, path]) => `
++          <tr>
++            <td style="padding:10px 0;border-bottom:1px solid #1A2234;">
++              <table cellpadding="0" cellspacing="0" role="presentation">
++                <tr>
++                  <td style="background-color:#E8B84B;border-radius:4px;width:56px;text-align:center;padding:3px 0;">
++                    <span style="font-size:10px;font-weight:800;color:#0A0F1E;letter-spacing:0.5px;">${step}</span>
++                  </td>
++                  <td style="padding-left:14px;">
++                    <p class="txt-primary" style="font-size:13px;font-weight:500;color:#E5E7EB;">${desc}</p>
++                    <p class="txt-dim" style="font-size:11px;color:#4B5563;font-family:'Courier New',monospace;">${path}</p>
++                  </td>
++                </tr>
++              </table>
++            </td>
++          </tr>`).join('')}
++      </table>
++
++      ${cta('Go to Dashboard', `${SITE_URL}/dashboard`)}
++      ${divider()}
++      ${para('If you did not create this account, contact support immediately at <a href="mailto:support@wertchain.com">support@wertchain.com</a>.')}
++    `)}
++  `, `Welcome, ${user.full_name} — your account is active.`)
++}
++
++// ── 2. Deposit Submitted ──────────────────────────────────────────────────
++
++export function depositSubmittedTemplate(
++  user: { full_name: string },
++  deposit: { amount: number; currency: string; payment_reference: string; created_at: string }
++) {
++  return base(`
++    ${cardHeader('Deposit under review', 'We\'ve received your transfer and are verifying it on-chain.')}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para('Your deposit has been recorded and is now in the review queue. Our finance team verifies every transaction on-chain before crediting your account — this typically takes 1–6 hours.')}
++      ${amountHero(deposit.amount, 'Deposit amount')}
++      ${dataTable([
++        ['Currency', deposit.currency],
++        ['Transaction reference', deposit.payment_reference, true],
++        ['Submitted', fmtDate(deposit.created_at)],
++        ['Status', 'Pending review'],
++      ])}
++      ${notice('Your funds are safe. This review step confirms the transaction reached our wallet before crediting your balance.', 'info')}
++      ${cta('View deposit status', `${SITE_URL}/dashboard`)}
++    `)}
++  `, `Deposit of ${fmt(deposit.amount)} is under review.`)
++}
++
++// ── 3. Deposit Approved ───────────────────────────────────────────────────
++
++export function depositApprovedTemplate(
++  user: { full_name: string },
++  deposit: { amount: number; currency: string; payment_reference: string }
++) {
++  return base(`
++    ${cardHeader('Deposit confirmed', `${fmt(deposit.amount)} has been credited to your account.`)}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para('Your deposit has been verified and your balance has been updated. You can now invest or keep funds in your wallet.')}
++      ${amountHero(deposit.amount, 'Amount credited')}
++      ${dataTable([
++        ['Currency', deposit.currency],
++        ['Transaction reference', deposit.payment_reference, true],
++        ['Status', '✓ Approved'],
++      ])}
++      ${notice('Funds are now in your available balance and ready to invest.', 'success')}
++      ${cta('Invest now', `${SITE_URL}/invest`)}
++    `)}
++  `, `${fmt(deposit.amount)} credited to your Wertchain account.`)
++}
++
++// ── 4. Deposit Rejected ───────────────────────────────────────────────────
++
++export function depositRejectedTemplate(
++  user: { full_name: string },
++  deposit: { amount: number; currency: string; rejection_reason: string }
++) {
++  return base(`
++    ${cardHeader('Deposit could not be verified', 'We were unable to confirm this transaction.')}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para('Unfortunately, we could not verify your deposit. No funds have been credited to your account. Details are below.')}
++      ${dataTable([
++        ['Attempted amount', `${fmt(deposit.amount)} ${deposit.currency}`],
++        ['Status', '✗ Rejected'],
++      ])}
++      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" class="card-inner" style="background-color:#1C0A0A;border:1px solid #7F1D1D;border-radius:10px;margin:16px 0;">
++        <tr><td style="padding:16px 20px;">
++          <p style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#7F1D1D;margin-bottom:6px;">Reason</p>
++          <p style="font-size:14px;color:#F87171;line-height:1.6;">${deposit.rejection_reason}</p>
++        </td></tr>
++      </table>
++      ${notice('If you believe this is an error, contact support with your transaction hash and we\'ll investigate.', 'warning')}
++      ${cta('Contact support', `${SITE_URL}/contact`)}
++    `)}
++  `, `Action required — your deposit of ${fmt(deposit.amount)} was not verified.`)
++}
++
++// ── 5. Withdrawal Requested ───────────────────────────────────────────────
++
++export function withdrawalRequestedTemplate(
++  user: { full_name: string },
++  withdrawal: { amount: number; withdrawal_type: string; created_at: string }
++) {
++  return base(`
++    ${cardHeader('Withdrawal request received', 'Your request is queued for processing.')}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para('We\'ve received your withdrawal request. Our team processes withdrawals within 24 hours on business days. You\'ll receive a confirmation once it\'s sent.')}
++      ${amountHero(withdrawal.amount, 'Withdrawal amount')}
++      ${dataTable([
++        ['Type', withdrawal.withdrawal_type.replace(/_/g, ' ')],
++        ['Requested', fmtDate(withdrawal.created_at)],
++        ['Processing time', 'Up to 24 hours'],
++        ['Status', 'Pending'],
++      ])}
++      ${notice('To cancel this request, contact support immediately. Once processed, withdrawals cannot be reversed.', 'warning')}
++    `)}
++  `, `Withdrawal of ${fmt(withdrawal.amount)} is being processed.`)
++}
++
++// ── 6. Withdrawal Approved ────────────────────────────────────────────────
++
++export function withdrawalApprovedTemplate(
++  user: { full_name: string },
++  withdrawal: { amount: number; withdrawal_type: string; tx_hash?: string }
++) {
++  return base(`
++    ${cardHeader('Withdrawal sent', `${fmt(withdrawal.amount)} is on its way.`)}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para('Your withdrawal has been approved and the transfer has been initiated. Please allow network confirmation time before funds appear in your external wallet.')}
++      ${amountHero(withdrawal.amount, 'Amount sent')}
++      ${dataTable([
++        ['Type', withdrawal.withdrawal_type.replace(/_/g, ' ')],
++        ['Status', '✓ Sent'],
++        ...(withdrawal.tx_hash ? [['On-chain tx', withdrawal.tx_hash] as [string, string]] : []),
++      ])}
++      ${notice('If funds do not arrive within 2 hours, contact support with the transaction reference above.', 'info')}
++      ${cta('View wallet', `${SITE_URL}/wallet`)}
++    `)}
++  `, `${fmt(withdrawal.amount)} withdrawal has been sent.`)
++}
++
++// ── 7. Withdrawal Rejected ────────────────────────────────────────────────
++
++export function withdrawalRejectedTemplate(
++  user: { full_name: string },
++  withdrawal: { amount: number; rejection_reason: string }
++) {
++  return base(`
++    ${cardHeader('Withdrawal declined', 'Your funds have been returned to your account.')}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para('Your withdrawal request could not be processed. The full amount has been returned to your available balance — no funds have left your account.')}
++      ${dataTable([
++        ['Amount returned', fmt(withdrawal.amount), true],
++        ['Status', '✗ Declined'],
++      ])}
++      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" class="card-inner" style="background-color:#1C0A0A;border:1px solid #7F1D1D;border-radius:10px;margin:16px 0;">
++        <tr><td style="padding:16px 20px;">
++          <p style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#7F1D1D;margin-bottom:6px;">Reason</p>
++          <p style="font-size:14px;color:#F87171;line-height:1.6;">${withdrawal.rejection_reason}</p>
++        </td></tr>
++      </table>
++      ${cta('View available balance', `${SITE_URL}/wallet`)}
++    `)}
++  `, `Your withdrawal of ${fmt(withdrawal.amount)} was declined — funds returned.`)
++}
++
++// ── 8. Contract Created ───────────────────────────────────────────────────
++
++export function contractCreatedTemplate(
++  user: { full_name: string },
++  contract: { plan_tier: string; principal: number; apy: number; term_days: number; matures_at: string }
++) {
++  const projectedReturn = contract.principal * (1 + (contract.apy / 100) * (contract.term_days / 365))
++  return base(`
++    ${cardHeader(`${contract.plan_tier} plan activated`, 'Your capital is now earning.')}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para(`Your investment is live. Capital has been locked into the <strong style="color:#E8B84B;">${contract.plan_tier}</strong> plan and is accruing returns on schedule.`)}
++      ${amountHero(contract.principal, 'Capital invested')}
++      ${dataTable([
++        ['Plan', contract.plan_tier],
++        ['APY', `${contract.apy}%`, true],
++        ['Term', `${contract.term_days} days`],
++        ['Matures', fmtDate(contract.matures_at)],
++        ['Projected return', fmt(projectedReturn), true],
++      ])}
++      ${notice('Returns accrue daily and are credited to your wallet at maturity. Early withdrawal forfeits accrued profit.', 'info')}
++      ${cta('Track your investment', `${SITE_URL}/investment-overview`)}
++    `)}
++  `, `${contract.plan_tier} investment of ${fmt(contract.principal)} is now active.`)
++}
++
++// ── 9. Contract Matured ───────────────────────────────────────────────────
++
++export function contractMaturedTemplate(
++  user: { full_name: string },
++  contract: { plan_tier: string; principal: number; total_return: number; matures_at: string }
++) {
++  const profit = contract.total_return - contract.principal
++  return base(`
++    ${cardHeader('Investment matured', 'Your capital and returns are available.')}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para(`Your <strong style="color:#E8B84B;">${contract.plan_tier}</strong> plan has reached maturity. Your principal and all accrued returns have been released to your available balance.`)}
++
++      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" class="card-inner" style="background-color:#0D1626;border:1px solid #1A2234;border-radius:10px;margin:20px 0;">
++        <tr>
++          <td style="padding:20px;border-right:1px solid #1A2234;" width="50%" align="center">
++            <p class="txt-dim" style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#4B5563;margin-bottom:4px;">Principal</p>
++            <p style="font-size:22px;font-weight:700;color:#FFFFFF;font-family:'Courier New',monospace;">${fmt(contract.principal)}</p>
++          </td>
++          <td style="padding:20px;" width="50%" align="center">
++            <p style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#065F46;margin-bottom:4px;">Profit Earned</p>
++            <p style="font-size:22px;font-weight:700;color:#10B981;font-family:'Courier New',monospace;">+${fmt(profit)}</p>
++          </td>
++        </tr>
++        <tr>
++          <td colspan="2" align="center" style="padding:16px;border-top:1px solid #1A2234;background-color:#081C14;border-radius:0 0 10px 10px;">
++            <p style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#065F46;margin-bottom:4px;">Total Credited</p>
++            <p style="font-size:32px;font-weight:800;color:#4ADE80;font-family:'Courier New',monospace;">${fmt(contract.total_return)}</p>
++          </td>
++        </tr>
++      </table>
++
++      ${notice('All funds are now in your available balance. You can reinvest, withdraw, or leave them earning in a new plan.', 'success')}
++      ${cta('Reinvest or withdraw', `${SITE_URL}/dashboard`)}
++    `)}
++  `, `Your investment matured — ${fmt(contract.total_return)} is in your account.`)
++}
++
++// ── 10. Profit Credited ───────────────────────────────────────────────────
++
++export function profitCreditedTemplate(
++  user: { full_name: string },
++  credit: { amount: number; source_plan: string; period_label: string }
++) {
++  return base(`
++    ${cardHeader('Profit credited', `Returns from your ${credit.source_plan} plan.`)}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para(`Your <strong style="color:#E8B84B;">${credit.source_plan}</strong> plan has credited returns for <strong>${credit.period_label}</strong>.`)}
++
++      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:20px 0;">
++        <tr>
++          <td class="card-inner" align="center" style="background-color:#022C22;border:1px solid #065F46;border-radius:10px;padding:24px;">
++            <p style="font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#065F46;margin-bottom:6px;">Profit credited</p>
++            <p style="font-size:36px;font-weight:800;color:#10B981;letter-spacing:-1px;font-family:'Courier New',monospace;">+${fmt(credit.amount)}</p>
++            <p style="font-size:12px;color:#6EE7B7;margin-top:4px;">${credit.period_label}</p>
++          </td>
++        </tr>
++      </table>
++
++      ${cta('View portfolio', `${SITE_URL}/investment-overview`)}
++    `)}
++  `, `+${fmt(credit.amount)} profit credited from your ${credit.source_plan} plan.`)
++}
++
++// ── 11. Migration Approved ────────────────────────────────────────────────
++
++export function migrationApprovedTemplate(
++  user: { full_name: string },
++  migration: { from_tier: string; to_tier: string; capital_amount: number; new_apy: number }
++) {
++  return base(`
++    ${cardHeader(`Plan upgraded to ${migration.to_tier}`, 'Your capital has been migrated.')}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para(`Your investment plan has been successfully upgraded from <strong>${migration.from_tier}</strong> to <strong style="color:#E8B84B;">${migration.to_tier}</strong>. Your capital is now earning at the new rate.`)}
++
++      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" class="card-inner" style="background-color:#0D1626;border:1px solid #1A2234;border-radius:10px;margin:20px 0;">
++        <tr>
++          <td style="padding:16px 20px;border-right:1px solid #1A2234;" width="50%" align="center">
++            <p class="txt-dim" style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#4B5563;margin-bottom:4px;">Previous plan</p>
++            <p style="font-size:16px;font-weight:600;color:#9CA3AF;">${migration.from_tier}</p>
++          </td>
++          <td style="padding:16px 20px;" width="50%" align="center">
++            <p style="font-size:11px;letter-spacing:1px;text-transform:uppercase;color:#78350F;margin-bottom:4px;">New plan</p>
++            <p style="font-size:16px;font-weight:700;color:#E8B84B;">${migration.to_tier}</p>
++          </td>
++        </tr>
++        <tr>
++          <td colspan="2" style="padding:16px 20px;border-top:1px solid #1A2234;">
++            <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
++              <tr>
++                <td>
++                  <p class="txt-dim" style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#4B5563;margin-bottom:2px;">Capital migrated</p>
++                  <p style="font-size:18px;font-weight:700;color:#FFFFFF;font-family:'Courier New',monospace;">${fmt(migration.capital_amount)}</p>
++                </td>
++                <td align="right">
++                  <p class="txt-dim" style="font-size:11px;letter-spacing:0.8px;text-transform:uppercase;color:#4B5563;margin-bottom:2px;">New APY</p>
++                  <p style="font-size:18px;font-weight:700;color:#E8B84B;font-family:'Courier New',monospace;">${migration.new_apy}%</p>
++                </td>
++              </tr>
++            </table>
++          </td>
++        </tr>
++      </table>
++
++      ${notice('Your new plan term starts from today. Returns accrue at the upgraded rate immediately.', 'success')}
++      ${cta('View updated portfolio', `${SITE_URL}/investment-overview`)}
++    `)}
++  `, `Plan upgraded to ${migration.to_tier} — now earning at ${migration.new_apy}% APY.`)
++}
++
++// ── 12. Security Alert ────────────────────────────────────────────────────
++
++export function securityAlertTemplate(
++  user: { full_name: string },
++  alert: { event: string; ip?: string; location?: string; timestamp: string }
++) {
++  return base(`
++    ${cardHeader('Security notice', 'A new sign-in was detected on your account.')}
++    ${cardBody(`
++      ${greeting(user.full_name)}
++      ${para('We detected a new sign-in to your Wertchain account. If this was you, no action is required.')}
++
++      <table width="100%" cellpadding="0" cellspacing="0" role="presentation" class="card-inner" style="background-color:#1C1400;border:1px solid #78350F;border-radius:10px;margin:20px 0;">
++        <tr><td style="padding:16px 20px;">
++          <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
++            ${alert.event ? dataRow('Event', alert.event) : ''}
++            ${alert.ip    ? dataRow('IP address', alert.ip) : ''}
++            ${alert.location ? dataRow('Location', alert.location) : ''}
++            ${dataRow('Time', fmtDate(alert.timestamp))}
++          </table>
++        </td></tr>
++      </table>
++
++      ${notice('If you did not sign in, secure your account immediately by changing your password and contacting support.', 'warning')}
++
++      <table cellpadding="0" cellspacing="0" role="presentation" style="margin-top:20px;">
++        <tr>
++          <td style="background-color:#7F1D1D;border-radius:8px;">
++            <a href="${SITE_URL}/contact" style="display:inline-block;padding:12px 24px;font-size:14px;font-weight:700;color:#FECACA;text-decoration:none;">Secure my account</a>
++          </td>
++        </tr>
++      </table>
++    `)}
++  `, 'Security alert — new sign-in detected on your Wertchain account.')
++}
+diff --git a/src/middleware.ts b/src/middleware.ts
+new file mode 100644
+index 0000000..dc2d535
+--- /dev/null
++++ b/src/middleware.ts
+@@ -0,0 +1,16 @@
++import { type NextRequest } from 'next/server'
++import { updateSession } from '@/lib/supabase/middleware'
++
++export async function middleware(request: NextRequest) {
++  return updateSession(request)
++}
++
++export const config = {
++  matcher: [
++    /*
++     * Match all paths except static files, images, and Next internals.
++     * This ensures the session refresh + auth guard runs on every navigation.
++     */
++    '/((?!_next/static|_next/image|favicon.ico|images/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
++  ],
++}

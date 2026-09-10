@@ -32,7 +32,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { adminClient, postLedgerTransaction } from "@/lib/ledger";
-import { mailer } from "@/lib/email/mailer";
 
 export async function POST(req: NextRequest) {
   // 1. Auth
@@ -127,12 +126,11 @@ export async function POST(req: NextRequest) {
   }
 
   const now = new Date();
-  const capitalAmount = migration.capital_amount as number;
-  const capitalStr = Number(capitalAmount).toFixed(8);
-  const topupNum = migration.topup_amount as number;
-  const topupStr = Number(topupNum).toFixed(8);
-  const totalPrincipal = migration.total_new_principal as number;
-  const totalPrincipalStr = Number(totalPrincipal).toFixed(8);
+  const capitalStr = migration.capital_amount.toFixed(8);
+  const topupNum = migration.topup_amount;
+  const topupStr = topupNum.toFixed(8);
+  const totalPrincipal = migration.total_new_principal ?? 0;
+  const totalPrincipalStr = totalPrincipal.toFixed(8);
   const userId = migration.user_id;
 
   // ── REJECT ────────────────────────────────────────────────────────────────
@@ -171,7 +169,7 @@ export async function POST(req: NextRequest) {
   try {
     // Calculate new contract financials using TARGET plan rates
     const newDuration = targetPlan.duration_days;
-    const newProfitRate = Number(targetPlan.profit_rate);
+    const newProfitRate = targetPlan.profit_rate;
     const newDailyProfit = (totalPrincipal * newProfitRate) / newDuration;
     const newExpectedProfit = totalPrincipal * newProfitRate;
 
@@ -190,9 +188,9 @@ export async function POST(req: NextRequest) {
         user_id: userId,
         plan_id: targetPlan.id,
         plan_tier: targetPlan.tier,
-        principal_amount: Number(totalPrincipal),
+        principal_amount: totalPrincipal,
         expected_profit: newExpectedProfit,
-        daily_profit_amount: Number(newDailyProfit),
+        daily_profit_amount: newDailyProfit,
         profit_rate_snapshot: newProfitRate,
         duration_days_snapshot: newDuration,
         state: "ACTIVE",
@@ -218,20 +216,20 @@ export async function POST(req: NextRequest) {
       contractId: migration.source_contract_id,
       migrationId: migration_id,
       description: `Migration debit — capital exiting contract ${migration.source_contract_id} to transit`,
-      amount: Number(capitalStr).toFixed(8),
+      amount: capitalStr,
       idempotencyKey: `migration_debit_${migration_id}`,
       initiatedBy: user.id,
       lines: [
         {
           accountType: "USER_CAPITAL_LOCKED",
           direction: "DEBIT",
-          amount: Number(capitalStr).toFixed(8),
+          amount: capitalStr,
           userId,
         },
         {
           accountType: "PLATFORM_MIGRATION_RESERVE",
           direction: "CREDIT",
-          amount: Number(capitalStr).toFixed(8),
+          amount: capitalStr,
           userId: undefined,
         },
       ],
@@ -244,20 +242,20 @@ export async function POST(req: NextRequest) {
       contractId: newContract.id,
       migrationId: migration_id,
       description: `Migration credit — capital entering new contract ${newContract.id} from transit`,
-      amount: Number(capitalStr).toFixed(8),
+      amount: capitalStr,
       idempotencyKey: `migration_credit_${migration_id}`,
       initiatedBy: user.id,
       lines: [
         {
           accountType: "PLATFORM_MIGRATION_RESERVE",
           direction: "DEBIT",
-          amount: Number(capitalStr).toFixed(8),
+          amount: capitalStr,
           userId: undefined,
         },
         {
           accountType: "USER_CAPITAL_LOCKED",
           direction: "CREDIT",
-          amount: Number(capitalStr).toFixed(8),
+          amount: capitalStr,
           userId,
         },
       ],
@@ -271,20 +269,20 @@ export async function POST(req: NextRequest) {
         contractId: newContract.id,
         migrationId: migration_id,
         description: `Migration top-up — ${topupStr} added to new contract ${newContract.id}`,
-        amount: Number(topupStr).toFixed(8),
+        amount: topupStr,
         idempotencyKey: `migration_topup_${migration_id}`,
         initiatedBy: user.id,
         lines: [
           {
             accountType: "USER_WALLET",
             direction: "DEBIT",
-            amount: Number(topupStr).toFixed(8),
+            amount: topupStr,
             userId,
           },
           {
             accountType: "USER_CAPITAL_LOCKED",
             direction: "CREDIT",
-            amount: Number(topupStr).toFixed(8),
+            amount: topupStr,
             userId,
           },
         ],
@@ -293,7 +291,7 @@ export async function POST(req: NextRequest) {
       // Decrement available_balance for top-up
       await adminClient.rpc("decrement_available_balance", {
         p_user_id: userId,
-        p_amount: Number(topupNum),
+        p_amount: topupNum,
       }).then(({ error }) => {
         if (error) console.error("available_balance decrement failed (non-fatal):", error.message);
       });
@@ -326,7 +324,7 @@ export async function POST(req: NextRequest) {
     if (topupNum > 0) {
       await adminClient.rpc("increment_locked_capital", {
         p_user_id: userId,
-        p_amount: Number(topupNum),
+        p_amount: topupNum,
       }).then(({ error }) => {
         if (error) console.error("locked_capital cache update failed (non-fatal):", error.message);
       });
@@ -350,26 +348,6 @@ export async function POST(req: NextRequest) {
       ledger_tx_id: creditTxId,
     });
 
-    // Send migration approved email (non-blocking)
-    const { data: migApproveUser } = await adminClient
-      .from("wc_users")
-      .select("email, full_name")
-      .eq("id", userId)
-      .single();
-
-    if (migApproveUser?.email) {
-      mailer.migrationApproved(migApproveUser.email, {
-        fullName: migApproveUser.full_name ?? "Investor",
-        sourcePlan: migration.source_contract_id ?? "WERTCHAIN_START",
-        targetPlan: migration.target_plan_tier ?? targetPlan.tier,
-        newPrincipal: Number(totalPrincipal),
-        newProfitRate: Number(targetPlan.profit_rate),
-        newMaturityDate: maturityDateStr,
-        newContractId: newContract.id,
-        migrationId: migration_id,
-      }).catch((e) => console.error("[mailer] migrationApproved failed:", e));
-    }
-
     return NextResponse.json({
       message: "Migration approved. New contract is ACTIVE.",
       migration: {
@@ -379,21 +357,16 @@ export async function POST(req: NextRequest) {
         new_contract: {
           id: newContract.id,
           state: "ACTIVE",
-          plan: targetPlan.label,
-          principal_amount: Number(totalPrincipal).toFixed(8),
+          principal_amount: totalPrincipal,
+          expected_profit: newExpectedProfit,
           maturity_date: maturityDateStr,
+          release_eligible_date: releaseDateStr,
         },
       },
-      ledger: {
-        debit_tx_id: debitTxId,
-        credit_tx_id: creditTxId,
-      },
     });
-  } catch (err) {
-    console.error("Migration approval error:", err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Unexpected error during migration approval" },
-      { status: 500 }
-    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("Migration approval failed:", message);
+    return NextResponse.json({ error: `Migration approval failed: ${message}` }, { status: 500 });
   }
 }
